@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "codexless-skill-lanes-v1",
+  "productOwnedSkills": {
+    "codexless-browser-repair": {
+      "target": "existing",
+      "reason": "Browser Repair follows the Existing Codex/Chrome Skill runtime and must never be copied into Managed CODEX_HOME by default."
+    }
+  },
+  "privateExistingSkillSyncToManaged": "disabled-by-default",
+  "allowedTargets": ["existing", "managed", "both"]
+}

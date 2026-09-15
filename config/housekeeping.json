@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "intervalMinutes": 60,
+  "tmpQuarantineAfterHours": 6,
+  "logQuarantineAfterDays": 7,
+  "rootEphemeralAfterHours": 6,
+  "quarantinePurgeAfterDays": 2,
+  "maxScanEntries": 20000,
+  "maxHistoryLines": 200
+}

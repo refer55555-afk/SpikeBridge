@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "codexless-dual-insurance-v1",
+  "defaultInstallMode": "recommended",
+  "defaultActivationState": "existing_only_pending_managed",
+  "dualReadyActivationState": "dual_ready",
+  "installerModes": {
+    "recommended": {
+      "label": "Recommended dual insurance",
+      "provision": ["existing", "managed"],
+      "routes": {
+        "stableModelFree": "managed",
+        "browser": "existing",
+        "formalAgent": "existing"
+      }
+    },
+    "existing": {
+      "label": "Advanced Existing-only",
+      "provision": ["existing"],
+      "routes": {
+        "stableModelFree": "existing",
+        "browser": "existing",
+        "formalAgent": "existing"
+      }
+    }
+  },
+  "dualReadyMethodRoutes": {
+    "managed": [
+      "codex.command_exec",
+      "codex.project_context",
+      "codex.account_preflight",
+      "codex.fs_read",
+      "codex.process",
+      "codex.process_receipt",
+      "codex.read_many",
+      "codex.precise_edit"
+    ],
+    "existing": [
+      "codex.catalog",
+      "codex.skill_list",
+      "codex.skill_read",
+      "codex.model_list",
+      "codex.browser_*",
+      "codex.agent_*"
+    ],
+    "localUserState": ["codex.call_profile"]
+  },
+  "managedOnlyInstallerOption": false,
+  "activation": {
+    "provisioningDoesNotActivateDualPolicy": true,
+    "requiredForDualReady": ["official-chatgpt-login", "managed-package-identity", "managed-native-binary", "account-read", "model-list", "config-read"],
+    "pendingRoutesStableModelFreeTo": "existing",
+    "laterManagedFailureFallback": "forbidden"
+  },
+  "noSilentFallback": true,
+  "managed": {
+    "packageName": "@openai/codex",
+    "packageVersion": "0.147.0",
+    "supportedNativePackages": {
+      "win32:x64": "@openai/codex-win32-x64",
+      "darwin:arm64": "@openai/codex-darwin-arm64"
+    },
+    "homeUnderStateRoot": "managed-codex-home",
+    "auth": "official-chatgpt-login",
+    "copyExistingCodexHome": false,
+    "copyExistingCredentials": false
+  }
+}

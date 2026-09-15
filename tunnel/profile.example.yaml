@@ -1,0 +1,18 @@
+# Copy this file to a local, gitignored profile and fill in values supplied by your tunnel provider.
+config_version: 1
+control_plane:
+  api_key: "file:C:/Path/To/local-tunnel.key"
+  base_url: "https://api.openai.com"
+  tunnel_id: "YOUR_TUNNEL_ID"
+  http_proxy: ""
+health:
+  listen_addr: "127.0.0.1:0"
+  url_file: "C:/Path/To/local-state/tunnel-health.url"
+log:
+  file: "C:/Path/To/local-state/tunnel.log"
+  format: "json"
+  level: "info"
+mcp:
+  server_urls:
+    - channel: "main"
+      url: "http://127.0.0.1:7690/mcp"

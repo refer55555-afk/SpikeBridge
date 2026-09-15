@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "verifiedCodexVersion": "0.147.0",
+  "verifiedAt": "2026-08-09",
+  "defaultAction": "deny",
+  "remoteAllowlist": {
+    "command/exec": {
+      "classification": "model-free",
+      "bridgeTool": "codex.command_exec",
+      "evidence": [
+        "Codex 0.147.0 stable App Server schema describes command/exec as standalone sandboxed argv execution without creating a thread or turn.",
+        "P0/P1 observed no thread/* or turn/* notifications during buffered command/exec acceptance.",
+        "P2 command/exec works inside an ephemeral CODEX_HOME with no mounted Codex login credential and Docker network=none."
+      ]
+    }
+  },
+  "internalHostAllowlist": {
+    "process/spawn": {
+      "classification": "model-free-host-unsandboxed",
+      "remoteExposure": "deny",
+      "capability": "computer-use-preview",
+      "reason": "Internal-only host process substrate for launching the pinned official Computer Use helper. Never expose generic process/spawn to remote callers."
+    },
+    "process/writeStdin": {
+      "classification": "model-free-host-process-control",
+      "remoteExposure": "deny",
+      "capability": "computer-use-preview",
+      "reason": "Internal-only stdin transport to the already validated official Computer Use helper process."
+    },
+    "process/kill": {
+      "classification": "model-free-host-process-control",
+      "remoteExposure": "deny",
+      "capability": "computer-use-preview",
+      "reason": "Internal-only cleanup for the official Computer Use helper process."
+    }
+  },
+  "denyFamilies": [
+    {
+      "pattern": "thread/*",
+      "classification": "model-session-or-unsafe-surface",
+      "reason": "Not required by the thin model-free bridge. Some thread methods enter model/session behavior; thread/shellCommand is explicitly documented by Codex 0.147.0 as unsandboxed with full access."
+    },
+    {
+      "pattern": "turn/*",
+      "classification": "model-execution-surface",
+      "reason": "Turn methods are outside the model-free toolbox boundary and may consume Codex model/service quota."
+    },
+    {
+      "pattern": "review/*",
+      "classification": "model-execution-surface",
+      "reason": "Review is outside the model-free toolbox boundary and may start model-backed work."
+    }
+  ],
+  "observeOnly": {
+    "account/usage/read": {
+      "classification": "usage-observability",
+      "remoteExposure": "deny",
+      "reason": "May be used by upgrade acceptance to compare account usage before/after a candidate method; not part of the remote toolbox."
+    },
+    "account/rateLimits/read": {
+      "classification": "usage-observability",
+      "remoteExposure": "deny",
+      "reason": "May be used by upgrade acceptance to inspect account/rate-limit state; not part of the remote toolbox."
+    }
+  },
+  "knownButUnclassified": {
+    "command/exec/write": "deny until persistent-process semantics and cost/safety behavior are separately accepted",
+    "command/exec/terminate": "deny until persistent-process semantics are separately accepted",
+    "command/exec/resize": "deny until persistent-process semantics are separately accepted"
+  }
+}

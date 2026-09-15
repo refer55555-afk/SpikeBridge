@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "admission": { "paused": false, "maxActive": 0, "maxPerProject": 0, "countApprovals": true, "focusModel": "", "focusLimit": 0 },
+  "commands": { "maxConcurrent": 4 },
+  "providers": {
+    "codex-a": { "enabled": true, "maxActive": 0, "defaultModel": "", "defaultEffort": "" },
+    "codex-b": { "enabled": true, "maxActive": 0, "defaultModel": "", "defaultEffort": "" },
+    "zcode": { "enabled": true, "maxActive": 0, "defaultModel": "", "defaultEffort": "" },
+    "mac": { "enabled": true, "maxActive": 0, "defaultModel": "", "defaultEffort": "" }
+  },
+  "memory": { "enabled": true },
+  "panel": { "refreshSeconds": 3, "historyLimit": 200, "logLines": 200, "theme": "system" },
+  "recovery": { "enabled": true, "intervalSeconds": 60, "failureThreshold": 3, "cooldownSeconds": 180 },
+  "tunnels": { "a": { "proxyUrl": "" }, "b": { "proxyUrl": "" } }
+}

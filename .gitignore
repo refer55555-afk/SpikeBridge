@@ -1,0 +1,54 @@
+# Dependencies and build output
+node_modules/
+**/node_modules/
+*.exe
+*.pdb
+*.zip
+
+# Local identities / credentials / secrets
+accounts/
+secrets/
+.private/
+*.dpapi
+auth.json
+config/local.json
+config/operator.json
+config/codex-call-profile.md
+config/context.json
+tunnel/profiles/*.yaml
+!tunnel/profiles/*.example.yaml
+
+# Runtime state and user data
+data/
+logs/
+tmp/
+cache/
+downloads/
+exports/
+diagnostics/
+runtime/state/
+state/**
+!state/safe-boot/
+state/safe-boot/**
+!state/safe-boot/seed-lkg/
+state/safe-boot/seed-lkg/**
+!state/safe-boot/seed-lkg/codexless-runtime/
+!state/safe-boot/seed-lkg/codexless-runtime/**
+!state/safe-boot/seed-lkg/overlay/
+!state/safe-boot/seed-lkg/overlay/**
+state/safe-boot/releases/
+state/safe-boot/work/
+state/safe-boot/boot-sessions/
+state/safe-boot/detached/
+state/safe-boot/*.json
+state/safe-boot/production.lock/
+state/safe-boot/seed-lkg/codexless-runtime/node_modules/
+state/safe-boot/seed-lkg/codexless-runtime/tmp/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+*.pid

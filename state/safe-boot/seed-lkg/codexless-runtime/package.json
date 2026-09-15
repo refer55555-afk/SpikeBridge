@@ -1,0 +1,72 @@
+{
+    "name":  "codexless",
+    "version":  "0.1.2-preview.12",
+    "private":  true,
+    "license":  "Apache-2.0",
+    "description":  "Codexless-derived runtime embedded in the Spike Bridge public build.",
+    "type":  "module",
+    "engines":  {
+                    "node":  "\u003e=22"
+                },
+    "scripts":  {
+                    "start:stdio":  "node scripts/launch.mjs stdio",
+                    "start:http":  "node scripts/launch.mjs http",
+                    "doctor":  "node scripts/doctor.mjs",
+                    "test:contract":  "node test/release-identity.mjs \u0026\u0026 node test/lifecycle-contract.mjs \u0026\u0026 node test/bootstrap-archive-policy.mjs \u0026\u0026 node test/bootstrap-persistence.mjs \u0026\u0026 node test/codex-version-gate.mjs \u0026\u0026 node test/browser-runtime-compat.mjs \u0026\u0026 node test/public-runtime-browser-guardrails.mjs \u0026\u0026 node test/stock-prompt-input-catalog.mjs \u0026\u0026 node test/public-command-policy.mjs \u0026\u0026 node test/public-registration-allowlist.mjs \u0026\u0026 node test/public-contract.mjs",
+                    "test:consent":  "node test/metered-consent.mjs \u0026\u0026 node test/agent-consent-card.mjs \u0026\u0026 node test/reasoning-effort.mjs",
+                    "test:browser-reader":  "node test/public-browser-adapter.mjs",
+                    "test:browser-operator":  "node --test test/browser-household-parity.mjs",
+                    "test:public-registration":  "node test/public-registration-allowlist.mjs",
+                    "test:diagnostics":  "node test/recent-call-diagnostics.mjs \u0026\u0026 node test/recent-call-http.mjs \u0026\u0026 node test/doctor-health.mjs",
+                    "test":  "node test/release-identity.mjs \u0026\u0026 node test/lifecycle-contract.mjs \u0026\u0026 node test/installer-lifecycle-windows.mjs \u0026\u0026 node test/bootstrap-archive-policy.mjs \u0026\u0026 node test/bootstrap-persistence.mjs \u0026\u0026 node test/codex-version-gate.mjs \u0026\u0026 node test/browser-runtime-compat.mjs \u0026\u0026 node test/public-runtime-browser-guardrails.mjs \u0026\u0026 node test/stock-prompt-input-catalog.mjs \u0026\u0026 node test/recent-call-diagnostics.mjs \u0026\u0026 node test/recent-call-http.mjs \u0026\u0026 node test/doctor-health.mjs \u0026\u0026 node test/metered-consent.mjs \u0026\u0026 node test/agent-consent-card.mjs \u0026\u0026 node test/reasoning-effort.mjs \u0026\u0026 node test/public-command-policy.mjs \u0026\u0026 node test/public-registration-allowlist.mjs \u0026\u0026 node test/public-browser-adapter.mjs \u0026\u0026 node --test test/browser-household-parity.mjs \u0026\u0026 node test/public-contract.mjs",
+                    "test:spike-memory-core":  "node test/gate-codex-agent-router.mjs \u0026\u0026 node test/gate-public-codex-b-memory-identity.mjs \u0026\u0026 node test/gate-memory-provider-identity.mjs \u0026\u0026 node test/gate-experience-memory-integration.mjs \u0026\u0026 node test/gate-experience-memory.mjs",
+                    "release:manifest":  "node scripts/generate-release-manifest.mjs",
+                    "bootstrap:materialize":  "node scripts/materialize-bootstrap.mjs",
+                    "test:release-identity":  "node test/release-identity.mjs",
+                    "test:lifecycle":  "node test/lifecycle-contract.mjs \u0026\u0026 node test/installer-lifecycle-windows.mjs",
+                    "test:bootstrap":  "node test/bootstrap-archive-policy.mjs \u0026\u0026 node test/bootstrap-persistence.mjs",
+                    "start:public-http":  "node src/mcp-http-public.mjs",
+                    "start:public-stdio":  "node src/mcp-stdio-public.mjs",
+                    "codexless:managed-login":  "node scripts/managed-codex-login.mjs",
+                    "compatibility:report":  "node scripts/compatibility-report.mjs",
+                    "skills:check":  "node scripts/sync-codex-skills.mjs check",
+                    "skills:sync":  "node scripts/sync-codex-skills.mjs sync",
+                    "test:compatibility":  "node --test test/upstream-compatibility-fingerprint.mjs",
+                    "test:skills":  "node --test test/codex-skill-sync.mjs test/public-skill-refresh.mjs",
+                    "release:preflight":  "node scripts/release-preflight.mjs",
+                    "test:live-codex-a":  "node test/gate-codex-a-runtime.mjs",
+                    "test:live-codex-b":  "node test/gate-codex-b-runtime.mjs"
+                },
+    "dependencies":  {
+                         "@modelcontextprotocol/node":  "2.0.0",
+                         "@modelcontextprotocol/server":  "2.0.0",
+                         "@napi-rs/canvas":  "1.0.8",
+                         "@openai/codex":  "0.147.0",
+                         "pdfjs-dist":  "6.3.289",
+                         "zod":  "4.4.3"
+                     },
+    "devDependencies":  {
+                            "@modelcontextprotocol/client":  "2.0.0"
+                        },
+    "files":  [
+                  "src",
+                  "config",
+                  "scripts",
+                  "bin/codexless-doctor.cmd",
+                  "bin/codexless-http.cmd",
+                  "bin/codexless-install.cmd",
+                  "bin/codexless-stdio.cmd",
+                  "bin/codexless-doctor.sh",
+                  "bin/codexless-http.sh",
+                  "bin/codexless-install.sh",
+                  "bin/codexless-stdio.sh",
+                  "bin/codexless-uninstall.sh",
+                  "npm-shrinkwrap.json",
+                  "README.md",
+                  "README.zh-CN.md",
+                  "SECURITY.md",
+                  "EXPORT_SYNC.md",
+                  "THIRD_PARTY_NOTICES.md",
+                  "skills"
+              ]
+}

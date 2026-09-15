@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bridge</title><link rel="stylesheet" href="/app.css"><script type="module" src="/app.js"></script></head>
+<body><a class="skip-link" href="#main">跳到主要内容</a>
+<div class="shell">
+  <aside class="sidebar" id="navigation-pane">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">B</span><div><strong>Bridge</strong><span>Spike Bridge 控制台</span></div></div>
+    <label class="search-wrap"><span class="sr-only">搜索设置或任务</span><input id="search" type="search" placeholder="搜索设置或任务" autocomplete="off"><kbd>Ctrl K</kbd></label>
+    <nav id="nav" aria-label="控制台分类"></nav>
+    <div class="sidebar-footer"><span id="connection-dot" class="dot"></span><span id="panel-state">正在连接本机</span><small>关闭窗口不会停止桥接</small></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><button id="toggle-navigation" class="text-button" aria-controls="navigation-pane" aria-expanded="true">收起导航</button><span id="breadcrumb">本机工作站 / 运行总览</span><div><span id="last-update">等待首次读取</span><button class="text-button" id="refresh-all" type="button">立即刷新</button></div></header>
+    <div id="connection-notice" class="connection-notice" role="status" hidden></div><main id="main" tabindex="-1"><div class="loading"><span class="loading-line"></span><h1>正在读取运行状态</h1><p>连接本机服务、任务和双通道。</p></div></main>
+    <footer class="statusbar"><span id="status-left">仅在本机开放管理入口</span><span id="status-right">设置保存在本机，更新不会覆盖</span></footer>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title"><div id="confirm-content"></div></dialog></body>
+</html>
