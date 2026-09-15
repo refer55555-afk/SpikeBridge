@@ -1,8 +1,25 @@
 # Spike Bridge
 
-Spike Bridge 是一个面向本机开发工作流的多 Agent 桥和中文工作台。它把 Codex、本地工具、可选的第二 Codex 账号、ZCode、Mac Worker、Memory、Safe-Boot 与 Operator 工作台统一在一个本机服务中。
+**Local-first MCP multi-agent workbench with a desktop GUI, dual Codex accounts, remote Mac Worker control, token usage analytics, Memory and Safe-Boot.**
+
+Spike Bridge 是一个面向本机开发工作流的多 Agent 桥和可视化工作台。它把 Codex、本地工具、两个可独立登录的 Codex 账号、ZCode、第二台 Mac Worker、Memory、Safe-Boot 与 Operator 工作台统一到一个本机控制面中。
+
+它的重点不是“再做一个命令行包装器”，而是让多 Agent 真正变成一个可以长期打开使用的**桌面式控制台**：你可以在窗口里看任务、切换/观察两个 Codex 账户、查看 Provider 状态、管理审批与恢复，并持续统计每次执行产生的 Token 用量。
+
+> Keywords: MCP, Model Context Protocol, Codex, multi-agent, AI agent orchestration, dual account, local-first, token tracking, token usage analytics, remote worker, Mac worker, developer workbench.
 
 这个仓库是**可公开发布版**：不包含任何作者本机账号、登录态、密钥、Tunnel ID、组织/Workspace ID、日志、任务历史、Memory 数据、机器路径或私人回执。首次运行时，这些内容只会在你的电脑上生成，并被 `.gitignore` 排除。
+
+## 为什么用 Spike Bridge
+
+- **带窗口的可视化工作台**：不是只靠 CLI。Operator 以独立桌面式窗口运行，集中展示任务、审批、Provider、Token、Memory、日志、恢复和系统设置。
+- **双 Codex 账户同时接入**：Codex A / Codex B 各自使用独立 `CODEX_HOME` 和登录态，可以在同一个 Bridge 与工作台中并行使用，同时保持账号隔离。
+- **连接并控制第二台电脑**：可把第二台 Mac 配置为 Mac Worker，通过局域网配对后接收任务、执行并返回结果；远端 Worker 不暴露通用 Shell。
+- **Token 消耗统计**：工作台记录可获得的 Token 回执，展示总 Token、输入、缓存输入、输出、推理输出、每日趋势，并可按执行器、模型和项目筛选/拆分以及导出 JSON。
+- **统一多 Agent 控制面**：Codex A、Codex B、ZCode、Mac Worker 都进入统一 Provider/任务视图，而不是各开一套零散工具。
+- **本地优先与隐私隔离**：Bridge 默认只监听 loopback；账号、Memory、任务历史、Token 记录和本机配置默认保留在本地。
+- **Safe-Boot / LKG**：候选版本先验证再切换，并保留 Last Known Good，用于降低本地自动化系统升级后直接不可用的风险。
+- **Experience Memory**：本机 SQLite 经验记忆，让重复出现的运行问题、Provider 特征和恢复经验能够被复用。
 
 ## 你会得到什么
 
@@ -71,6 +88,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap\setup.ps1 `
 ```cmd
 START-SPIKE-BRIDGE.cmd restart
 ```
+
+两个账户的登录态彼此隔离，但会同时出现在同一个 Provider / 任务控制面中，适合把不同任务分配给不同 Codex 账户，而不需要反复退出和重新登录。
+
+## 第二台电脑：Mac Worker
+
+Spike Bridge 可以把局域网内的第二台 Mac 接入为远程 Worker。Windows 主机负责 Bridge 与任务控制，Mac Worker 接收经过配对的任务并返回状态/结果；Worker 只暴露受限的 `/health`、`/task` 和任务状态接口，不提供通用远程 Shell。
+
+首次配对与生命周期命令见 [bootstrap/mac-worker-b/README.md](bootstrap/mac-worker-b/README.md)。
+
+## Token 用量与趋势
+
+Operator 工作台内置 **Token 用量** 页面。对于能够取得原生 usage 回执的任务，会记录并展示：
+
+- 总 Token、输入 Token、缓存输入、输出 Token、推理输出；
+- 完成/失败/活动轮次；
+- 最近 1 / 7 / 30 / 90 天趋势；
+- 按执行器、模型、项目拆分；
+- 任务级明细与 JSON 导出。
+
+没有可靠回执的字段保持“未知”，不会把未知值伪装成 0。
 
 ## 远程 ChatGPT / Fast Entry
 
