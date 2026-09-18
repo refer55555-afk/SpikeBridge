@@ -8,9 +8,10 @@ const record = (name, ok, details = {}) => results.push({ name, ...details, ok: 
 const router = createCodexAgentRouter();
 let primaryCalls = 0;
 let bCalls = 0;
+let lastBStartDelegation = null;
 const primary = async (input) => { primaryCalls += 1; return { structuredContent: { lane: "a", ...input } }; };
 const bHandlers = new Map();
-bHandlers.set("codex.agent_start", async () => ({ structuredContent: { status: "consent_required", taskId: "C-B-ROUTE", shortTaskId: "C-B-ROUTE" } }));
+bHandlers.set("codex.agent_start", async ({ delegation }) => { lastBStartDelegation = delegation ?? null; return { structuredContent: { status: "consent_required", taskId: "C-B-ROUTE", shortTaskId: "C-B-ROUTE" } }; });
 bHandlers.set("codex.agent_commit", async ({ taskId }) => { bCalls += 1; return { structuredContent: { taskId, agentRef: "agent_b_route", status: "running" } }; });
 bHandlers.set("codex.agent_show", async ({ agentRef }) => { bCalls += 1; return { structuredContent: { agentRef, status: "completed", lane: "b" } }; });
 bHandlers.set("codex.agent_send", async ({ agentRef }) => ({ structuredContent: { agentRef, status: "running", lane: "b" } }));
@@ -20,7 +21,9 @@ bHandlers.set("codex.agent_reject", async ({ agentRef }) => ({ structuredContent
 bHandlers.set("codex.model_list", async () => ({ structuredContent: { models: [{ id: "fixture" }] } }));
 
 const bProvider = createCodexAgentProvider({ id: "codex-b", displayName: "Codex B", handlers: bHandlers, agentExecutor: { running: true }, formalAgentAvailable: true, routeRegistry: router });
-const consent = await bProvider.start({ task: "fixture" });
+const providerDelegation = { basis: "user_requested", rationale: "The router fixture explicitly requests Codex B execution." };
+const consent = await bProvider.start({ task: "fixture", options: { delegation: providerDelegation } });
+record("provider.forwards-delegation", lastBStartDelegation?.basis === "user_requested" && lastBStartDelegation?.rationale === providerDelegation.rationale, { lastBStartDelegation });
 record("provider.binds-task", consent.taskId === "C-B-ROUTE" && router.snapshot().taskRoutes === 1, { consent, routes: router.snapshot() });
 record("provider.binds-task-identity", router.resolveProvider("codex.agent_commit", { taskId: "C-B-ROUTE" }) === "codex-b", { provider: router.resolveProvider("codex.agent_commit", { taskId: "C-B-ROUTE" }) });
 

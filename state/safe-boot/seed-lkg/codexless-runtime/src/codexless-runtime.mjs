@@ -34,6 +34,9 @@ import { createExperienceMemory } from "./memory/index.mjs";
 import { resolveSpikeBridgeRoot, spikeAccountHome, spikeAgentTaskStateFile, spikeZCodeStateFile } from "./spike-paths.mjs";
 import { createCodexAgentRouter } from "./codex-agent-router.mjs";
 
+// Keep the command schema and executor ceiling aligned; Agent RPCs use their own timeout.
+const COMMAND_MAX_TIMEOUT_MS = 120_000;
+
 function envString(env, name, fallback = null) {
   const value = env?.[name];
   return typeof value === "string" && value.length ? value : fallback;
@@ -303,7 +306,7 @@ export async function createCodexlessRuntime({
       profileOverride,
       configOverrides,
       launchEnv: modelFreeLaunchEnv,
-      maxTimeoutMs: 30_000,
+      maxTimeoutMs: COMMAND_MAX_TIMEOUT_MS,
       watchdogGraceMs: 5_000,
       outputBytesCap: 32_768,
       allowUntrustedReadOnlyBootstrap: modelFreeRuntime.lane === "managed",
@@ -675,12 +678,16 @@ export async function createCodexlessRuntime({
     // the exact codex.agent_* tool handlers captured by the server factory, so
     // provider-dispatched work is behaviorally identical to the MCP surface.
     const agentToolHandlerSink = new Map();
+    // A uses the primary wrapped handlers; binding those as a secondary map
+    // would recurse. Generic A dispatch still needs an explicit primary owner.
+    const primaryRouteRegistry = { bind: (payload) => codexAgentRouter.bindPrimary(payload, "codex-a") };
     const agentProviderRegistry = createAgentProviderRegistry({
       providers: [
         createCodexAgentProvider({
           id: "codex",
           displayName: "Codex A",
           handlers: agentToolHandlerSink,
+          routeRegistry: primaryRouteRegistry,
           agentExecutor,
           resourceSnapshotProvider,
           defaultCwd,
@@ -690,6 +697,7 @@ export async function createCodexlessRuntime({
           id: "codex-a",
           displayName: "Codex A",
           handlers: agentToolHandlerSink,
+          routeRegistry: primaryRouteRegistry,
           agentExecutor,
           resourceSnapshotProvider,
           defaultCwd,
@@ -765,6 +773,7 @@ export async function createCodexlessRuntime({
 
     const createServer = createCodexToolboxServerFactory({
       executor,
+      maxTimeoutMs: COMMAND_MAX_TIMEOUT_MS,
       workbench: toolWorkbench,
       browserPreview,
       browserElicitationBridge,

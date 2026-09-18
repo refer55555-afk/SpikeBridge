@@ -491,6 +491,7 @@ function directFormalCodexRejection(kind) {
 }
 
 const SPIKE_PROVIDER_INTERNAL = Symbol.for("spike.bridge.agent-provider.internal");
+const ORIGINAL_CALLER_TEXT = Symbol.for("spike.bridge.agent.original-caller-text");
 
 function experienceMemoryBlockedResult(guard) {
   const payload = {
@@ -530,7 +531,7 @@ function wrapToolHandlerWithExperienceMemory({ toolName, handler, memory, codexA
           tools: ["codex.agent_start"],
         });
         if (memoryState?.guard?.blocked) return experienceMemoryBlockedResult(memoryState.guard);
-        if (memoryState?.task) args = { ...input, prompt: memoryState.task };
+        if (memoryState?.task) args = { ...input, prompt: memoryState.task, [ORIGINAL_CALLER_TEXT]: input.prompt };
       } else if (toolName === "codex.agent_send" && typeof input?.message === "string") {
         memoryState = memory.beforeAgentSend?.({
           ref: input.agentRef,
@@ -541,7 +542,7 @@ function wrapToolHandlerWithExperienceMemory({ toolName, handler, memory, codexA
           approach: input.message,
         });
         if (memoryState?.guard?.blocked) return experienceMemoryBlockedResult(memoryState.guard);
-        if (memoryState?.message) args = { ...input, message: memoryState.message };
+        if (memoryState?.message) args = { ...input, message: memoryState.message, [ORIGINAL_CALLER_TEXT]: input.message };
       }
     } catch {
       // Memory is an internal aid. A Memory read/build failure must never turn

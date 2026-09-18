@@ -36,6 +36,7 @@ export class CodexAppServerClient {
   #initializeCapabilities;
   #closing = false;
   #stderrHandler;
+  #closeOnRequestTimeout;
 
   constructor({
     bin,
@@ -46,6 +47,7 @@ export class CodexAppServerClient {
     initializeCapabilities = null,
     serverRequestHandler = null,
     stderrHandler = null,
+    closeOnRequestTimeout = true,
   }) {
     if (!launch && !bin) {
       throw new Error("CodexAppServerClient requires either a codex binary path or a launch factory");
@@ -62,6 +64,7 @@ export class CodexAppServerClient {
     }
 
     this.#cwd = cwd;
+    this.#closeOnRequestTimeout = closeOnRequestTimeout;
     this.#defaultRequestTimeoutMs = requestTimeoutMs;
     this.#initializeCapabilities = initializeCapabilities;
     this.#serverRequestHandler = serverRequestHandler;
@@ -123,7 +126,7 @@ export class CodexAppServerClient {
     this.#cleanup = typeof spec.cleanup === "function" ? spec.cleanup : null;
 
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => this.#onStdout(chunk));
+    child.stdout.on("data", (chunk) => { if (this.#child === child) this.#onStdout(chunk); });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
       try {
@@ -132,7 +135,8 @@ export class CodexAppServerClient {
         process.stderr.write(`[codex-app-server] stderr handler failure: ${error instanceof Error ? error.message : String(error)}\n`);
       }
     });
-    child.on("error", (error) => this.#failAll(error));
+    child.on("error", (error) => { if (this.#child === child) this.#failAll(error); });
+    child.stdin.on("error", (error) => { if (this.#child === child) this.#failAll(error); });
     child.on("exit", (code, signal) => {
       const wasRunning = this.#child === child;
       if (wasRunning) this.#child = null;
@@ -170,6 +174,12 @@ export class CodexAppServerClient {
             if (!waiter) return;
             this.#pending.delete(key);
             const timeoutError = new CodexRpcTimeoutError(method, timeoutMs);
+            // A shared agent transport owns other turns and approval requests.
+            // An unanswered RPC is not evidence that those turns have stopped.
+            if (!this.#closeOnRequestTimeout) {
+              waiter.reject(timeoutError);
+              return;
+            }
             void (async () => {
               try {
                 await this.close();
@@ -355,17 +365,17 @@ export class CodexAppServerClient {
       get settlement() {
         return entry.settlement;
       },
-      resolve: (result) => this.#settleServerRequest(key, { kind: "resolve", result }),
-      reject: (error) => this.#settleServerRequest(key, { kind: "reject", error }),
+      resolve: (result) => this.#settleServerRequest(key, { kind: "resolve", result }, entry),
+      reject: (error) => this.#settleServerRequest(key, { kind: "reject", error }, entry),
     };
     entry.handle = Object.freeze(handle);
     this.#pendingServerRequests.set(key, entry);
     return entry.handle;
   }
 
-  #settleServerRequest(key, settlement) {
+  #settleServerRequest(key, settlement, expectedEntry) {
     const entry = this.#pendingServerRequests.get(key);
-    if (!entry) throw new Error(`server request is unknown or already settled: ${key}`);
+    if (!entry || entry !== expectedEntry || entry.settled) throw new Error(`server request is unknown or already settled: ${key}`);
     if (!this.#child) throw new Error(`cannot settle server request after Codex App Server closed: ${key}`);
 
     if (settlement.kind === "resolve") {

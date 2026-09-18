@@ -383,6 +383,7 @@ export class CodexAgentExecutor {
   #controlRequestIds = new Map();
   #unsubscribe = null;
   #opened = false;
+  #openPromise = null;
   #closed = false;
   #maxEvents;
   #nextEventSeq = 1;
@@ -429,6 +430,7 @@ export class CodexAgentExecutor {
             options: { cwd: this.#defaultCwd, ...(launchEnv ? { env: { ...launchEnv } } : {}) },
           }),
           requestTimeoutMs,
+          closeOnRequestTimeout: false,
           initializeCapabilities: { experimentalApi: true },
           serverRequestHandler,
           clientInfo: {
@@ -445,11 +447,33 @@ export class CodexAgentExecutor {
 
   async open() {
     if (this.#closed) throw new Error("CodexAgentExecutor is closed");
-    if (this.#opened) return this.#client.initializedResult;
-    const initialized = await this.#client.start();
-    this.#unsubscribe = this.#client.onNotification((message) => this.#onNotification(message));
-    this.#opened = true;
-    return initialized;
+    if (this.#openPromise) return this.#openPromise;
+    if (this.running) return this.#client.initializedResult;
+    this.#openPromise = (async () => {
+      // Keep task identities and idempotency records across a transport exit.
+      // Reconciliation is read-only; accepted/uncertain turns are never replayed.
+      if (this.#opened) {
+        for (const state of this.#agents.values()) {
+          state.pendingApproval = null;
+          state.pendingRequestHandle = null;
+          if (!TERMINAL_TURN_STATUSES.has(state.latestTurnStatus)) {
+            state.status = "unknown";
+            state.latestError = "Codex connection was lost; provider state must be reconciled before continuing. No turn was replayed.";
+          }
+        }
+      }
+      const initialized = await this.#client.start();
+      if (this.#closed) {
+        await this.#client.close();
+        throw new Error("CodexAgentExecutor closed while opening");
+      }
+      this.#unsubscribe?.();
+      this.#unsubscribe = this.#client.onNotification((message) => this.#onNotification(message));
+      this.#opened = true;
+      return initialized;
+    })();
+    try { return await this.#openPromise; }
+    finally { this.#openPromise = null; }
   }
 
   async close() {
@@ -481,6 +505,7 @@ export class CodexAgentExecutor {
   }
 
   async listModels({ cursor = null, limit = null, includeHidden = false } = {}) {
+    await this.open();
     this.#assertOpen();
     if (cursor !== null && (typeof cursor !== "string" || !cursor)) throw new Error("cursor must be a non-empty string when provided");
     if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 200)) throw new Error("limit must be an integer from 1 to 200 when provided");
@@ -497,6 +522,7 @@ export class CodexAgentExecutor {
   }
 
   async start({ cwd = this.#defaultCwd, task, clientRequestId = null, permissionProfile = null, model = null, reasoningEffort = null }) {
+    await this.open();
     this.#assertOpen();
     if (typeof task !== "string" || !task.trim()) throw new Error("task must be a non-empty string");
     if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) {
@@ -669,6 +695,7 @@ export class CodexAgentExecutor {
   }
 
   async show({ agentRef, afterSeq = 0 }) {
+    await this.open();
     this.#assertOpen();
     if (!Number.isInteger(afterSeq) || afterSeq < 0) throw new Error("afterSeq must be a non-negative integer");
     const state = this.#agents.get(agentRef);
@@ -692,6 +719,7 @@ export class CodexAgentExecutor {
     liveness = null,
     nextSeq = 0,
   }) {
+    await this.open();
     this.#assertOpen();
     if (typeof agentRef !== "string" || !agentRef.trim()) throw new Error("reattach requires agentRef");
     if (typeof threadId !== "string" || !threadId.trim()) throw new Error("reattach requires threadId");
@@ -755,6 +783,7 @@ export class CodexAgentExecutor {
   }
 
   async resolvePendingRequest({ agentRef, requestId, result }) {
+    await this.open();
     this.#assertOpen();
     const state = this.#agents.get(agentRef);
     if (!state) throw new Error(`unknown agentRef: ${agentRef}`);
@@ -776,6 +805,7 @@ export class CodexAgentExecutor {
   }
 
   async rejectPendingRequest({ agentRef, requestId, error }) {
+    await this.open();
     this.#assertOpen();
     const state = this.#agents.get(agentRef);
     if (!state) throw new Error(`unknown agentRef: ${agentRef}`);
@@ -797,6 +827,7 @@ export class CodexAgentExecutor {
   }
 
   async resolveApproval({ agentRef, approvalRequestId, clientRequestId, decision, elicitationContent = null }) {
+    await this.open();
     this.#assertOpen();
     if (!new Set(["approve", "reject"]).has(decision)) throw new Error("decision must be approve or reject");
     if (typeof approvalRequestId !== "string" || !approvalRequestId.trim()) {
@@ -832,6 +863,7 @@ export class CodexAgentExecutor {
   }
 
   async cancel({ agentRef, clientRequestId, expectedTurnId = null }) {
+    await this.open();
     this.#assertOpen();
     if (typeof clientRequestId !== "string" || !clientRequestId.trim()) {
       throw new Error("clientRequestId must be a non-empty string");
@@ -903,6 +935,7 @@ export class CodexAgentExecutor {
   }
 
   async send({ agentRef, message, clientRequestId = null, model = null, reasoningEffort = null }) {
+    await this.open();
     this.#assertOpen();
     if (typeof message !== "string" || !message.trim()) throw new Error("message must be a non-empty string");
     if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) {
@@ -932,7 +965,9 @@ export class CodexAgentExecutor {
 
     await this.#refreshFromOfficial(state);
     if (state.pendingApproval) throw new Error(`agent ${agentRef} has a pending Codex approval`);
-    if (state.status !== "idle") throw new Error(`agent ${agentRef} is not idle: ${state.status}`);
+    if (state.status !== "idle" && state.status !== "interrupted") {
+      throw new Error(`agent ${agentRef} is not resumable: ${state.status}`);
+    }
 
     const resumed = await this.#client.request("thread/resume", { threadId: state.threadId });
     if (resumed?.thread?.canAcceptDirectInput === false) {
@@ -1460,7 +1495,9 @@ export class CodexAgentExecutor {
       status: state.status,
       latestTurnStatus: state.latestTurnStatus,
       liveness: livenessSnapshot(state),
-      canSend: state.status === "idle" && state.latestTurnStatus === "completed" && !state.pendingApproval,
+      canSend: ((state.status === "idle" && state.latestTurnStatus === "completed")
+        || (state.status === "interrupted" && state.latestTurnStatus === "interrupted"))
+        && !state.pendingApproval,
       pendingApproval: state.pendingApproval ? { ...state.pendingApproval } : null,
       finalResult: state.finalResult,
       resourceReceipt: state.resourceReceipt ? structuredClone(state.resourceReceipt) : null,

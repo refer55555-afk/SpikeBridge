@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 
 const SPIKE_PROVIDER_INTERNAL = Symbol.for("spike.bridge.agent-provider.internal");
+const ORIGINAL_CALLER_TEXT = Symbol.for("spike.bridge.agent.original-caller-text");
 
 const REQUIRED_HANDLERS = [
   "codex.agent_start",
@@ -97,7 +98,9 @@ export function createCodexAgentProvider({
       if (typeof task !== "string" || !task.trim()) throw new TypeError("CodexProvider.start requires a non-empty task string");
       const payload = await call("codex.agent_start", {
         prompt: task,
+        [ORIGINAL_CALLER_TEXT]: options?.[ORIGINAL_CALLER_TEXT],
         requestId: options?.requestId ?? `bridge-start-${randomUUID()}`,
+        ...(options?.delegation ? { delegation: options.delegation } : {}),
         ...(project ? { cwd: project } : {}),
         ...(options?.model ? { model: options.model } : {}),
         ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
@@ -119,6 +122,7 @@ export function createCodexAgentProvider({
       const payload = await call("codex.agent_send", {
         agentRef: ref,
         message,
+        [ORIGINAL_CALLER_TEXT]: options?.[ORIGINAL_CALLER_TEXT],
         requestId: options?.requestId ?? `bridge-send-${randomUUID()}`,
         ...(options?.model ? { model: options.model } : {}),
         ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),

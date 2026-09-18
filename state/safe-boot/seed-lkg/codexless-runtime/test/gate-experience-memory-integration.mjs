@@ -51,9 +51,31 @@ function record(name, ok, details = {}) {
   console.error(`[memory-integration] ${ok ? "PASS" : "FAIL"} ${name} ${JSON.stringify(details).slice(0, 500)}`);
 }
 
+const USER_REQUESTED_DELEGATION = Object.freeze({
+  basis: "user_requested",
+  rationale: "This integration fixture explicitly requests Agent execution.",
+});
+
 try {
+  const jobsBeforeDelegationBlock = memory.status().operationalJobs;
+  const startsBeforeDelegationBlock = state.startCalls;
+  const delegationBlocked = await handlers.get("spike.agent_start")({
+    provider: "codex",
+    task: "this must be blocked before provider or memory work",
+    requestId: "memory-delegation-block",
+  });
+  record("delegation.blocks-before-provider-and-memory", delegationBlocked?.isError === true
+    && delegationBlocked?.structuredContent?.errorCode === "AGENT_DELEGATION_NOT_JUSTIFIED"
+    && state.startCalls === startsBeforeDelegationBlock
+    && memory.status().operationalJobs === jobsBeforeDelegationBlock, {
+    errorCode: delegationBlocked?.structuredContent?.errorCode,
+    startCalls: state.startCalls,
+    jobsBefore: jobsBeforeDelegationBlock,
+    jobsAfter: memory.status().operationalJobs,
+  });
+
   const jobsBeforeUnknown = memory.status().operationalJobs;
-  const unknown = await handlers.get("spike.agent_start")({ provider: "missing-provider", task: "must fail before memory job creation", requestId: "memory-unknown-start" });
+  const unknown = await handlers.get("spike.agent_start")({ provider: "missing-provider", task: "must fail before memory job creation", requestId: "memory-unknown-start", delegation: USER_REQUESTED_DELEGATION });
   record("unknown-provider.no-memory-job", unknown?.isError === true && unknown?.structuredContent?.errorCode === "AGENT_PROVIDER_UNKNOWN" && memory.status().operationalJobs === jobsBeforeUnknown, {
     errorCode: unknown?.structuredContent?.errorCode,
     before: jobsBeforeUnknown,
@@ -64,7 +86,8 @@ try {
     provider: "codex",
     task: "Investigate localhost HTTP 502 proxy failure",
     requestId: "memory-start-proxy",
-    project: "C:\\Projects\\SpikeBridgeFixture",
+    delegation: USER_REQUESTED_DELEGATION,
+    project: "F:\\SpikeBridge",
     options: {},
   });
   record("start.called-once", state.startCalls === 1 && start?.isError === false, { calls: state.startCalls, ref: start?.structuredContent?.ref });
@@ -93,7 +116,7 @@ try {
   record("completion.does-not-invent-lesson", completed?.structuredContent?.status === "completed" && memory.status().items === beforeCompletion && (memory.status().statuses.active || 0) === activeBeforeCompletion, { items: memory.status().items });
 
   state.status = "running";
-  const cancelStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "cancel memory lifecycle gate", requestId: "memory-cancel-start", project: "C:\\Projects\\SpikeBridgeFixture", options: {} });
+  const cancelStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "cancel memory lifecycle gate", requestId: "memory-cancel-start", delegation: USER_REQUESTED_DELEGATION, project: "F:\\SpikeBridge", options: {} });
   const cancelRef = cancelStart?.structuredContent?.ref;
   const cancelled = await handlers.get("spike.agent_cancel")({ provider: "codex", ref: cancelRef, requestId: "memory-cancel-stop", expectedTurnId: "fixture-turn" });
   const cancelledJob = memory.jobForRef("codex", cancelRef);
@@ -105,7 +128,7 @@ try {
 
 
   state.status = "running";
-  const learningStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "learn a new fixture repair", requestId: "memory-learning-start", project: "C:\\Projects\\SpikeBridgeFixture", options: {} });
+  const learningStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "learn a new fixture repair", requestId: "memory-learning-start", delegation: USER_REQUESTED_DELEGATION, project: "F:\\SpikeBridge", options: {} });
   const learningRef = learningStart.structuredContent.ref;
   const itemsBeforeLearningFailure = memory.status().items;
   state.status = "failed";
@@ -121,7 +144,7 @@ try {
   state.status = "failed";
   await handlers.get("spike.agent_status")({ provider: "codex", ref: learningRef });
   const candidate = memory.store.findBySignature(observed.signature, { activeOnly: false })
-    .find((item) => item.status === "candidate" && item.project === "C:\\Projects\\SpikeBridgeFixture");
+    .find((item) => item.status === "candidate" && item.project === "F:\\SpikeBridge");
   record("second-failure.links-two-observations", Boolean(candidate) && memory.status().items === itemsBeforeLearningFailure + 1
     && candidate.confidence === "low" && memory.inspect(candidate.id).evidence.filter((row) => row.event_type === "failure").length === 2
     && memory.inspect(candidate.id).evidence.some((row) => row.failure_id === observed.id), { candidateId: candidate?.id });
@@ -147,13 +170,13 @@ try {
   await handlers.get("spike.agent_status")({ provider: "codex", ref: learningRef });
   record("completion.replay-is-idempotent", memory.status().items === itemsAfterLearning
     && memory.inspect(candidate.id).evidence.length === evidenceAfterLearning, { items: memory.status().items });
-  record("learning.retrieved-on-next-start", memory.beforeAgentStart({ task: "widget fixture obsolete setting", provider: "codex", project: "C:\\Projects\\SpikeBridgeFixture" })
+  record("learning.retrieved-on-next-start", memory.beforeAgentStart({ task: "widget fixture obsolete setting", provider: "codex", project: "F:\\SpikeBridge" })
     .task.includes(state.learning.memoryLesson.verified_fix), { id: learned.item.id });
 
 
   state.status = "running";
   state.learning = null;
-  const directStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "verify after one failure", requestId: "memory-direct-start", project: "C:\\Projects\\SpikeBridgeFixture", options: {} });
+  const directStart = await handlers.get("spike.agent_start")({ provider: "codex", task: "verify after one failure", requestId: "memory-direct-start", delegation: USER_REQUESTED_DELEGATION, project: "F:\\SpikeBridge", options: {} });
   const directRef = directStart.structuredContent.ref;
   const beforeDirect = memory.status().items;
   state.status = "failed";

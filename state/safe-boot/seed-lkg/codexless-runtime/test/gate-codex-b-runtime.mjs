@@ -1,5 +1,6 @@
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
 import {
+  assertAgentDelegationAllowed,
   assertAgentTaskCapabilityMatch,
   createAgentPreviewState,
   durableAgentCheckpoint,
@@ -16,13 +17,19 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { resolvePinnedCodex } from "../../../../../runtime/safe-boot/codex-runtime.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
-const codexBin = resolvePinnedCodex(root);
-const codexHome = path.join(root, "accounts", "codex-b");
-const baseEnv = { ...process.env };
+const root = "F:\\SpikeBridge";
+const codexBin = "F:\\SpikeBridge\\runtime\\codex\\0.153.0-alpha.5\\package\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe";
+const codexHome = "F:\\SpikeBridge\\accounts\\codex-b";
+const baseEnv = {
+  ...process.env,
+  USERPROFILE: "C:\\Users\\Administrator",
+  HOME: "C:\\Users\\Administrator",
+  HOMEDRIVE: "C:",
+  HOMEPATH: "\\Users\\Administrator",
+  LOCALAPPDATA: "C:\\Users\\Administrator\\AppData\\Local",
+  APPDATA: "C:\\Users\\Administrator\\AppData\\Roaming",
+};
 const launchEnv = managedLaunchEnv(baseEnv, codexHome);
 const results = [];
 const record = (name, ok, details = {}) => results.push({ name, ...details, ok: ok === true });
@@ -211,6 +218,43 @@ try {
 }
 record("command.workspace-copy-not-policy-blocked", workspaceCopyPass);
 
+const USER_REQUESTED_DELEGATION = Object.freeze({
+  basis: "user_requested",
+  rationale: "This test fixture explicitly requests Agent execution.",
+});
+let missingDelegationError = null;
+try {
+  assertAgentDelegationAllowed(null);
+} catch (error) {
+  missingDelegationError = error;
+}
+record("delegation.missing-blocked", missingDelegationError?.code === "AGENT_DELEGATION_NOT_JUSTIFIED", {
+  code: missingDelegationError?.code ?? null,
+});
+record("delegation.user-requested-pass", assertAgentDelegationAllowed(USER_REQUESTED_DELEGATION).basis === "user_requested");
+record("delegation.capability-required-pass", assertAgentDelegationAllowed({
+  basis: "capability_required",
+  rationale: "This fixture requires a remote execution capability unavailable to the local lane.",
+  capability: "remote_execution",
+}).capability === "remote_execution");
+record("delegation.materially-faster-pass", assertAgentDelegationAllowed({
+  basis: "materially_faster",
+  rationale: "Independent work can run in parallel and materially reduce the completion time.",
+  accelerationMechanism: "parallel_independent_work",
+}).accelerationMechanism === "parallel_independent_work");
+let vagueSpeedError = null;
+try {
+  assertAgentDelegationAllowed({
+    basis: "materially_faster",
+    rationale: "An Agent might be somewhat faster for this task.",
+  });
+} catch (error) {
+  vagueSpeedError = error;
+}
+record("delegation.vague-speed-blocked", vagueSpeedError?.code === "AGENT_DELEGATION_NOT_JUSTIFIED", {
+  code: vagueSpeedError?.code ?? null,
+});
+
 record("capability.infer-write", inferAgentTaskCapabilities("请修改 docs/PLAN.md 并保存到仓库").write === true);
 record("capability.infer-readonly", inferAgentTaskCapabilities("只做分析，不修改任何文件").write === false);
 record("capability.memory-capsule-does-not-escalate", inferAgentTaskCapabilities(
@@ -292,9 +336,19 @@ const preflightHandlers = captureAgentTools({
   meteredConsentMode: "off",
   agentPreviewState: createAgentPreviewState({ meteredConsentMode: "off" }),
 });
+const delegationBlockedStart = await preflightHandlers.get("codex.agent_start")({
+  prompt: "只做分析，不修改任何文件",
+  requestId: "delegation-missing-blocked",
+  cwd: root,
+});
+record("delegation.direct-start-blocks-before-agent-start", delegationBlockedStart?.structuredContent?.errorCode === "AGENT_DELEGATION_NOT_JUSTIFIED" && preflightStartCalls === 0, {
+  errorCode: delegationBlockedStart?.structuredContent?.errorCode ?? null,
+  startCalls: preflightStartCalls,
+});
 const blockedStart = await preflightHandlers.get("codex.agent_start")({
   prompt: "请修改 docs/P0.md 并保存到仓库",
   requestId: "preflight-write-blocked",
+  delegation: USER_REQUESTED_DELEGATION,
   cwd: root,
 });
 record("preflight.write-blocks-before-agent-start", blockedStart?.structuredContent?.errorCode === "BLOCKED_CAPABILITY_MISMATCH" && preflightStartCalls === 0, {
@@ -304,6 +358,7 @@ record("preflight.write-blocks-before-agent-start", blockedStart?.structuredCont
 const allowedReadStart = await preflightHandlers.get("codex.agent_start")({
   prompt: "只做分析，不修改任何文件",
   requestId: "preflight-read-allowed",
+  delegation: USER_REQUESTED_DELEGATION,
   cwd: root,
 });
 record("preflight.readonly-task-can-start", allowedReadStart?.structuredContent?.status === "running" && preflightStartCalls === 1, {
@@ -323,6 +378,7 @@ const ambiguousHandlers = captureAgentTools({
 const ambiguousStart = await ambiguousHandlers.get("codex.agent_start")({
   prompt: "只做分析，不修改任何文件",
   requestId: "preflight-ambiguous-blocked",
+  delegation: USER_REQUESTED_DELEGATION,
   cwd: root,
 });
 record("preflight.ambiguous-authority-blocks-before-start", ambiguousStart?.structuredContent?.errorCode === "BLOCKED_AMBIGUOUS_AUTHORITY"
@@ -639,6 +695,145 @@ try {
   await reattachExecutor?.close().catch(() => {});
 }
 
+let interruptedResumeCalls = 0;
+let interruptedTurnStartCalls = 0;
+const interruptedResumeClient = {
+  running: true,
+  initializedResult: { ok: true },
+  serverRequestMethods: [],
+  async start() { return this.initializedResult; },
+  onNotification() { return () => {}; },
+  async request(method, params) {
+    if (method === "thread/read") return { thread: { id: "thread-interrupted-resume", status: { type: "idle" } } };
+    if (method === "thread/turns/list") {
+      if (params?.itemsView !== "full") throw new Error("interrupted resume requires full turn items");
+      return { data: [{ id: "turn-interrupted-old", status: "interrupted", items: [] }] };
+    }
+    if (method === "thread/resume") {
+      interruptedResumeCalls += 1;
+      return {
+        thread: { id: "thread-interrupted-resume", canAcceptDirectInput: true },
+        model: "fixture",
+        modelProvider: "fixture",
+        reasoningEffort: "low",
+      };
+    }
+    if (method === "turn/start") {
+      interruptedTurnStartCalls += 1;
+      return { turn: { id: "turn-interrupted-new", status: "inProgress" } };
+    }
+    throw new Error(`unexpected interrupted-resume method: ${method}`);
+  },
+  async close() {},
+};
+let interruptedResumeExecutor = null;
+try {
+  interruptedResumeExecutor = new CodexAgentExecutor({ defaultCwd: root, clientFactory: () => interruptedResumeClient });
+  await interruptedResumeExecutor.open();
+  const interrupted = await interruptedResumeExecutor.reattach({
+    agentRef: "agent-interrupted-resume",
+    threadId: "thread-interrupted-resume",
+    turnId: "turn-interrupted-old",
+    cwd: root,
+    permissionProfile: ":read-only",
+    timing: { startedAt: Date.now() - 10_000, endedAt: Date.now() - 1_000, durationMs: 9_000 },
+    execution: { requestedModel: "fixture", resolvedModel: "fixture", reasoningEffort: "low" },
+    nextSeq: 101,
+  });
+  const resumed = await interruptedResumeExecutor.send({
+    agentRef: "agent-interrupted-resume",
+    message: "continue the same thread",
+    clientRequestId: "interrupted-resume-send",
+  });
+  record("interrupted.same-thread-resumable", interrupted.status === "interrupted"
+    && interrupted.canSend === true
+    && resumed.threadId === "thread-interrupted-resume"
+    && resumed.turnId === "turn-interrupted-new"
+    && resumed.status === "running"
+    && interruptedResumeCalls === 1
+    && interruptedTurnStartCalls === 1, {
+    beforeStatus: interrupted.status,
+    beforeCanSend: interrupted.canSend,
+    afterStatus: resumed.status,
+    threadId: resumed.threadId,
+    turnId: resumed.turnId,
+    threadResumeCalls: interruptedResumeCalls,
+    turnStartCalls: interruptedTurnStartCalls,
+  });
+} catch (error) {
+  record("interrupted.same-thread-resumable", false, { error: error instanceof Error ? error.message : String(error) });
+} finally {
+  await interruptedResumeExecutor?.close().catch(() => {});
+}
+
+let interruptedHandlerSendCalls = 0;
+const interruptedHandlerAgent = {
+  running: true,
+  async listModels() { return { models: [] }; },
+  async show({ agentRef }) {
+    return {
+      agentRef,
+      threadId: "thread-handler-interrupted",
+      turnId: "turn-handler-old",
+      status: "interrupted",
+      latestTurnStatus: "interrupted",
+      liveness: { state: "TERMINAL_INTERRUPTED" },
+      canSend: true,
+      pendingApproval: null,
+      finalResult: null,
+      resourceReceipt: null,
+      latestError: null,
+      lastErrorEvent: null,
+      timing: { startedAt: Date.now() - 10_000, endedAt: Date.now() - 1_000, durationMs: 9_000 },
+      execution: { requestedModel: null, resolvedModel: "fixture", modelProvider: "fixture", serviceTier: null, reasoningEffort: null },
+      events: [],
+      nextSeq: 1,
+    };
+  },
+  async start() { throw new Error("not used"); },
+  async send({ agentRef }) {
+    interruptedHandlerSendCalls += 1;
+    return {
+      agentRef,
+      threadId: "thread-handler-interrupted",
+      turnId: "turn-handler-new",
+      status: "running",
+      latestTurnStatus: "inProgress",
+      liveness: { state: "RUNNING_ACTIVE" },
+      canSend: false,
+      pendingApproval: null,
+      finalResult: null,
+      resourceReceipt: null,
+      latestError: null,
+      lastErrorEvent: null,
+      timing: { startedAt: Date.now(), endedAt: null, durationMs: null },
+      execution: { requestedModel: null, resolvedModel: "fixture", modelProvider: "fixture", serviceTier: null, reasoningEffort: null },
+      events: [],
+      nextSeq: 2,
+    };
+  },
+  async cancel() { throw new Error("not used"); },
+  async resolveApproval() { throw new Error("not used"); },
+};
+const interruptedHandlerTools = captureAgentTools({
+  agentExecutor: interruptedHandlerAgent,
+  authorityExecutor: readOnlyAuthority,
+  meteredConsentMode: "off",
+  agentPreviewState: createAgentPreviewState({ meteredConsentMode: "off" }),
+});
+const interruptedHandlerResult = await interruptedHandlerTools.get("codex.agent_send")({
+  agentRef: "agent-handler-interrupted",
+  message: "continue interrupted thread",
+  requestId: "handler-interrupted-resume",
+});
+record("interrupted.public-send-allowed", interruptedHandlerResult?.structuredContent?.status === "running"
+  && interruptedHandlerResult?.structuredContent?.turnId === "turn-handler-new"
+  && interruptedHandlerSendCalls === 1, {
+  status: interruptedHandlerResult?.structuredContent?.status ?? null,
+  turnId: interruptedHandlerResult?.structuredContent?.turnId ?? null,
+  sendCalls: interruptedHandlerSendCalls,
+});
+
 let missingTurnStartCalls = 0;
 const missingTurnClient = {
   running: true,
@@ -821,6 +1016,7 @@ try {
   const firstStart = await firstHandlers.get("codex.agent_start")({
     prompt: "只做分析，不修改任何文件",
     requestId: "persisted-start",
+    delegation: USER_REQUESTED_DELEGATION,
     cwd: root,
   });
   record("persistence.active-checkpoint-written", firstStart?.structuredContent?.agentRef === "agent-persisted" && firstStartCalls === 1);
@@ -872,6 +1068,172 @@ try {
   await rm(persistenceRoot, { recursive: true, force: true });
 }
 
+for (const terminalStatus of ["interrupted", "idle"]) {
+const interruptedPersistenceRoot = await mkdtemp(path.join(os.tmpdir(), "spike-bridge-interrupted-reattach-"));
+try {
+  const taskStateFile = path.join(interruptedPersistenceRoot, "agent-task-cards.json");
+  const baseSnapshot = {
+    agentRef: "agent-persisted-interrupted",
+    threadId: "thread-persisted-interrupted",
+    turnId: "turn-persisted-interrupted-old",
+    status: "running",
+    latestTurnStatus: "inProgress",
+    canSend: false,
+    pendingApproval: null,
+    finalResult: null,
+    resourceReceipt: null,
+    latestError: null,
+    lastErrorEvent: null,
+    liveness: { state: "RUNNING_ACTIVE", lastProviderEventAt: Date.now(), lastMeaningfulEventAt: Date.now() },
+    timing: { startedAt: Date.now() - 5_000, endedAt: null, durationMs: null },
+    execution: { requestedModel: null, resolvedModel: "fixture", modelProvider: "fixture", serviceTier: null, reasoningEffort: null },
+    events: [],
+    nextSeq: 12,
+  };
+  const firstAgent = {
+    running: true,
+    async listModels() { return { models: [] }; },
+    async start() { return structuredClone(baseSnapshot); },
+    async show() { return structuredClone(baseSnapshot); },
+    async send() { throw new Error("not used"); },
+    async cancel() { throw new Error("not used"); },
+    async resolveApproval() { throw new Error("not used"); },
+  };
+  const firstHandlers = captureAgentTools({
+    agentExecutor: firstAgent,
+    authorityExecutor: readOnlyAuthority,
+    meteredConsentMode: "off",
+    agentPreviewState: createAgentPreviewState({ meteredConsentMode: "off", taskStateFile }),
+  });
+  await firstHandlers.get("codex.agent_start")({
+    prompt: "persist interrupted recovery fixture",
+    requestId: "persisted-interrupted-start",
+    delegation: USER_REQUESTED_DELEGATION,
+    cwd: root,
+  });
+  const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+  const persistedRecord = persisted.records?.find((entry) => entry?.agentRef === "agent-persisted-interrupted");
+  const interruptedSnapshot = {
+    ...structuredClone(persistedRecord?.activeSnapshot ?? baseSnapshot),
+    checkpointVersion: 2,
+    threadId: "thread-persisted-interrupted",
+    turnId: "turn-persisted-interrupted-old",
+    status: terminalStatus,
+    latestTurnStatus: terminalStatus === "idle" ? "completed" : "interrupted",
+    canSend: false,
+    pendingApproval: null,
+    timing: { startedAt: Date.now() - 5_000, endedAt: Date.now() - 1_000, durationMs: 4_000 },
+    liveness: { state: "TERMINAL_INTERRUPTED" },
+    terminal: true,
+    terminalAt: Date.now() - 1_000,
+  };
+  persistedRecord.terminalSnapshot = interruptedSnapshot;
+  persistedRecord.activeSnapshot = {
+    ...structuredClone(interruptedSnapshot),
+    threadId: null,
+    turnId: null,
+    status: "unknown",
+    latestTurnStatus: null,
+    canSend: false,
+    terminal: false,
+    latestError: "synthetic restart unknown snapshot",
+  };
+  persistedRecord.phase = "active";
+  await writeFile(taskStateFile, JSON.stringify(persisted, null, 2), "utf8");
+
+  let attached = false;
+  let restartReattachCalls = 0;
+  let restartSendCalls = 0;
+  const restartAgent = {
+    running: true,
+    async listModels() { return { models: [] }; },
+    async start() { throw new Error("restart recovery must not replay start"); },
+    async show() {
+      if (!attached) {
+        return {
+          agentRef: "agent-persisted-interrupted",
+          threadId: null,
+          turnId: null,
+          status: "unknown",
+          latestTurnStatus: null,
+          canSend: false,
+          pendingApproval: null,
+          finalResult: null,
+          resourceReceipt: null,
+          latestError: "unknown agentRef",
+          lastErrorEvent: null,
+          liveness: { state: "UNCERTAIN" },
+          timing: { startedAt: null, endedAt: null, durationMs: null },
+          execution: { requestedModel: null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
+          events: [],
+          nextSeq: 0,
+        };
+      }
+      return {
+        ...structuredClone(interruptedSnapshot),
+        canSend: true,
+        terminal: true,
+      };
+    },
+    async reattach(input) {
+      restartReattachCalls += 1;
+      attached = true;
+      return {
+        ...structuredClone(interruptedSnapshot),
+        ...input,
+        status: terminalStatus,
+        latestTurnStatus: terminalStatus === "idle" ? "completed" : "interrupted",
+        canSend: true,
+      };
+    },
+    async send({ agentRef }) {
+      restartSendCalls += 1;
+      return {
+        ...structuredClone(baseSnapshot),
+        agentRef,
+        threadId: "thread-persisted-interrupted",
+        turnId: "turn-persisted-interrupted-new",
+        status: "running",
+        latestTurnStatus: "inProgress",
+        canSend: false,
+      };
+    },
+    async cancel() { throw new Error("not used"); },
+    async resolveApproval() { throw new Error("not used"); },
+  };
+  const restartHandlers = captureAgentTools({
+    agentExecutor: restartAgent,
+    authorityExecutor: readOnlyAuthority,
+    meteredConsentMode: "off",
+    agentPreviewState: createAgentPreviewState({ meteredConsentMode: "off", taskStateFile }),
+  });
+  const shown = await restartHandlers.get("codex.agent_show")({agentRef:"agent-persisted-interrupted"});
+  record(`persistence.${terminalStatus}-status-keeps-identity`, shown.structuredContent?.status === terminalStatus
+    && shown.structuredContent?.threadId === "thread-persisted-interrupted"
+    && shown.structuredContent?.turnId === "turn-persisted-interrupted-old");
+  const resumed = await restartHandlers.get("codex.agent_send")({
+    agentRef: "agent-persisted-interrupted",
+    message: "resume the interrupted persisted thread",
+    requestId: "persisted-interrupted-send",
+  });
+  record(`persistence.${terminalStatus}-terminal-reattaches-before-send`, resumed?.structuredContent?.status === "running"
+    && resumed?.structuredContent?.threadId === "thread-persisted-interrupted"
+    && resumed?.structuredContent?.turnId === "turn-persisted-interrupted-new"
+    && restartReattachCalls === 1
+    && restartSendCalls === 1, {
+    status: resumed?.structuredContent?.status ?? null,
+    threadId: resumed?.structuredContent?.threadId ?? null,
+    turnId: resumed?.structuredContent?.turnId ?? null,
+    reattachCalls: restartReattachCalls,
+    sendCalls: restartSendCalls,
+  });
+} catch (error) {
+  record(`persistence.${terminalStatus}-terminal-reattaches-before-send`, false, { error: error instanceof Error ? error.message : String(error) });
+} finally {
+  await rm(interruptedPersistenceRoot, { recursive: true, force: true });
+}
+
+}
 const zcodeDurableRoot = await mkdtemp(path.join(os.tmpdir(), "spike-zcode-idempotency-"));
 try {
   const cli = path.join(zcodeDurableRoot, "fake.cjs");

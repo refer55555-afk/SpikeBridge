@@ -1,10 +1,12 @@
 {
     "name":  "spike-bridge",
-    "version":  "0.1.0",
+    "version":  "0.1.1",
     "private":  true,
     "description":  "Spike Bridge: a durable local multi-agent bridge for Codex A/B, ZCode, and Mac.",
     "scripts":  {
-                    "test":  "npm run test:safe-boot \u0026\u0026 npm run test:runtime \u0026\u0026 npm run test:operator",
+                    "doctor":  "node scripts/diagnose-bridge.mjs",
+                    "test:reliability":  "node --test test/reliability.test.mjs",
+                    "test":  "npm run test:reliability \u0026\u0026 npm run test:safe-boot \u0026\u0026 npm run test:runtime \u0026\u0026 npm run test:operator",
                     "test:operator":  "node --test --test-timeout=15000 operator/tests/operator.test.mjs operator/tests/usage.test.mjs operator/tests/usage-executor.test.mjs",
                     "test:safe-boot":  "node --test test/safe-boot/production.test.mjs test/safe-boot/codex-runtime.test.mjs test/housekeeping.test.mjs",
                     "test:runtime":  "npm --prefix state/safe-boot/seed-lkg/codexless-runtime run test:spike-memory-core \u0026\u0026 node state/safe-boot/seed-lkg/codexless-runtime/test/gate-provider-layout.mjs \u0026\u0026 node state/safe-boot/seed-lkg/codexless-runtime/test/gate-spike-agent-card.mjs",

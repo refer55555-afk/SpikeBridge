@@ -14,6 +14,13 @@
 // forever. send/cancel never mount UI.
 
 import { z } from "zod/v4";
+import {
+  AGENT_ACCELERATION_MECHANISMS,
+  AGENT_DELEGATION_BASES,
+  AGENT_REQUIRED_CAPABILITIES,
+  assertAgentDelegationAllowed,
+} from "./agent-tools.mjs";
+const ORIGINAL_CALLER_TEXT = Symbol.for("spike.bridge.agent.original-caller-text");
 import { renderAgentCard } from "./agent-card-view.mjs";
 import {
   SPIKE_AGENT_CARD_URI,
@@ -97,12 +104,23 @@ export function registerSpikeAgentTools(server, { registry, memory = null }) {
     {
       title: "Start Agent (Provider-Agnostic)",
       description:
-        "Start one agent task on the requested provider. Routing is decided by the provider registry, not by this tool. Codex tasks keep the full codex.agent_start lifecycle (Call Profile, Call Approval consent, fixed-text Task IDs, usage receipts); other providers follow their own capability contract as declared in the registry. When a payload reports UNKNOWN, that fact is not observable through the provider — do not guess it. The start result is the one and only Spike Agent Card mount for this task. NEVER retry this UI-owning tool merely to supervise a running task; later status reads must use spike.agent_status, which is data-only. The retired public name spike.agent_show must not be used because stale ChatGPT snapshots associated it with a UI template.",
+        "Start one agent task on the requested provider. NEW AGENT DELEGATION IS DENY-BY-DEFAULT: use local/model-free work directly when it is sufficient and faster. This tool may start a new Agent only when delegation proves one of three allowed bases: the user explicitly requested an Agent/provider, a recognized provider-only capability is required, or a concrete acceleration mechanism materially reduces completion time. Mere convenience, second opinions, or the idea that another Agent may be smarter are not valid reasons. Routing is decided by the provider registry, not by this tool. Codex tasks keep the full codex.agent_start lifecycle (Call Profile, Call Approval consent, fixed-text Task IDs, usage receipts); other providers follow their own capability contract as declared in the registry. When a payload reports UNKNOWN, that fact is not observable through the provider — do not guess it. The start result is the one and only Spike Agent Card mount for this task. NEVER retry this UI-owning tool merely to supervise a running task; later status reads must use spike.agent_status, which is data-only. The retired public name spike.agent_show must not be used because stale ChatGPT snapshots associated it with a UI template.",
       inputSchema: z.object({
         provider: providerSchema,
         task: z.string().min(1).max(200_000),
         requestId: z.string().min(1).max(512)
           .describe("Caller-stable idempotency key for this logical agent start. Reuse it only when retrying the exact same logical request."),
+        delegation: z.object({
+          basis: z.enum(AGENT_DELEGATION_BASES)
+            .describe("Why a new Agent is justified. user_requested is valid only when the current user explicitly asked for an Agent/provider; do not infer it from a general task request."),
+          rationale: z.string().min(12).max(2_000)
+            .describe("Concrete bounded explanation of why direct local/model-free execution is insufficient or slower for this task."),
+          capability: z.enum(AGENT_REQUIRED_CAPABILITIES).optional()
+            .describe("Required when basis=capability_required."),
+          accelerationMechanism: z.enum(AGENT_ACCELERATION_MECHANISMS).optional()
+            .describe("Required when basis=materially_faster."),
+        }).strict()
+          .describe("Hard delegation evidence checked before provider lookup, Memory injection, or any metered/model work."),
         project: z.string().min(1).max(32_768).optional()
           .describe("Optional working-directory context for the task."),
         options: z.object({
@@ -120,7 +138,13 @@ export function registerSpikeAgentTools(server, { registry, memory = null }) {
         "openai/toolInvocation/invoked": "Agent task ready.",
       },
     },
-    async ({ provider, task, requestId, project, options }) => {
+    async ({ provider, task, requestId, delegation, project, options }) => {
+      let boundDelegation;
+      try {
+        boundDelegation = assertAgentDelegationAllowed(delegation);
+      } catch (error) {
+        return providerError(error);
+      }
       let target;
       try {
         target = registry.require(provider);
@@ -131,7 +155,7 @@ export function registerSpikeAgentTools(server, { registry, memory = null }) {
       const memoryState = memory?.beforeAgentStart?.({ task, provider, project, tools: [`${provider}.agent_start`] }) ?? { task, jobKey: null, guard: { blocked: false } };
       if (memoryState.guard?.blocked) return memoryBlocked(memoryState.guard);
       try {
-        payload = await target.start({ task: memoryState.task, project, options: { ...(options ?? {}), requestId } });
+        payload = await target.start({ task: memoryState.task, project, options: { ...(options ?? {}), requestId, delegation: boundDelegation, [ORIGINAL_CALLER_TEXT]: task } });
       } catch (error) {
         memory?.onProviderFailure?.({ jobKey: memoryState.jobKey, provider, project, tool: `${provider}.agent_start`, error });
         return providerError(error);
@@ -214,7 +238,7 @@ export function registerSpikeAgentTools(server, { registry, memory = null }) {
       const memoryState = memory?.beforeAgentSend?.({ ref, message, provider, project: options?.project, tools: [`${provider}.agent_send`], approach: message }) ?? { message, jobKey: null, guard: { blocked: false }, project: options?.project };
       if (memoryState.guard?.blocked) return memoryBlocked(memoryState.guard);
       try {
-        payload = await registry.require(provider).send(ref, memoryState.message, { ...(options ?? {}), requestId });
+        payload = await registry.require(provider).send(ref, memoryState.message, { ...(options ?? {}), requestId, [ORIGINAL_CALLER_TEXT]: message });
       } catch (error) {
         memory?.onProviderFailure?.({ jobKey: memoryState.jobKey, provider, project: memoryState.project ?? options?.project ?? null, tool: `${provider}.agent_send`, error });
         return providerError(error);

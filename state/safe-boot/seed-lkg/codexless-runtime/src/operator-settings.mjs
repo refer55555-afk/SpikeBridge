@@ -6,13 +6,13 @@ export const PROVIDERS = ['codex-a', 'codex-b', 'zcode', 'mac'];
 export const PROVIDER_NAMES = { 'codex-a': 'Codex A', 'codex-b': 'Codex B', zcode: 'ZCode', mac: 'Mac' };
 export const DEFAULT_SETTINGS = {
   schemaVersion: 1, revision: 0,
-  admission: { paused: false, maxActive: 0, maxPerProject: 0, countApprovals: true, focusModel: '', focusLimit: 0 },
+  admission: { paused: false, maxActive: 0, maxPerProject: 0, countApprovals: true, focusModel: 'gpt-6-astra', focusLimit: 0 },
   commands: { maxConcurrent: 4 },
   providers: Object.fromEntries(PROVIDERS.map(id => [id, { enabled: true, maxActive: 0, defaultModel: '', defaultEffort: '' }])),
   memory: { enabled: true },
   panel: { refreshSeconds: 3, historyLimit: 200, logLines: 200, theme: 'light' },
   recovery: { enabled: true, intervalSeconds: 60, failureThreshold: 3, cooldownSeconds: 180 },
-  tunnels: { a: { proxyUrl: '' }, b: { proxyUrl: '' } },
+  tunnels: { a: { proxyUrl: 'http://127.0.0.1:7890' }, b: { proxyUrl: 'http://127.0.0.1:7890' } },
 };
 export const SETTINGS_FIELDS = [
   { key: 'admission.paused', section: '并发与调度', label: '暂停接收新任务', type: 'boolean', effect: '立即生效', help: '现有任务继续运行，后续启动和续聊会被明确拒绝；不会中断已有任务。' },

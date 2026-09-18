@@ -50,6 +50,10 @@ function record(name, ok, details = {}) {
   results.push({ name, ok: ok === true, ...details });
   console.error(`[gate] ${ok ? "PASS" : "FAIL"} ${name} ${JSON.stringify(details).slice(0, 300)}`);
 }
+const USER_REQUESTED_DELEGATION = Object.freeze({
+  basis: "user_requested",
+  rationale: "This live card acceptance gate explicitly requests Agent execution.",
+});
 
 // 1) tool surface metadata ----------------------------------------------------
 const listed = await rpc("tools/list", {});
@@ -122,7 +126,7 @@ record("resources.legacy-v1-read", legacyV1ResourceContent?.uri === LEGACY_V1_CA
   { mime: legacyV1ResourceContent?.mimeType, bytes: legacyV1ResourceContent?.text?.length });
 
 // 3) action payload does not remount card (Mac honest-unsupported cancel) -----
-const macCancel = await callTool("spike.agent_cancel", { provider: "mac", ref: "mac_card_gate_probe" });
+const macCancel = await callTool("spike.agent_cancel", { provider: "mac", ref: "mac_card_gate_probe", requestId: "card-gate-mac-cancel" });
 record("cancel.no-cardRender", macCancel?.structuredContent?.cardRender === undefined,
   { cardRender: macCancel?.structuredContent?.cardRender });
 const macCardV1 = macCancel?.structuredContent?.cardV1;
@@ -135,13 +139,15 @@ record("cancel.cardV1", macCardV1?.schemaVersion === "spike.agent-card.v1"
   { cardV1: macCardV1 });
 
 // unknown provider still fails closed, and must NOT fake a card
-const unknown = await callTool("spike.agent_start", { provider: "does-not-exist", task: "x" });
+const unknown = await callTool("spike.agent_start", { provider: "does-not-exist", task: "x", requestId: "card-gate-unknown-provider", delegation: USER_REQUESTED_DELEGATION });
 record("unknown-provider-fails-closed", unknown?.isError === true && unknown?.structuredContent?.errorCode === "AGENT_PROVIDER_UNKNOWN", {});
 
 // 4) real ZCode lane --------------------------------------------------------------
 const start = await callTool("spike.agent_start", {
   provider: "zcode",
   task: "Reply with exactly one line: CARD-GATE-OK",
+  requestId: "card-gate-zcode-start-1",
+  delegation: USER_REQUESTED_DELEGATION,
   options: { mode: "plan" },
 });
 const startCard = start?.structuredContent?.cardV1;
@@ -181,6 +187,7 @@ if (startRef) {
       provider: "zcode",
       ref: startRef,
       message: "Continue this session and reply with exactly one line: CARD-GATE-TURN-2",
+      requestId: "card-gate-zcode-send-1",
     });
     const sendCard = send?.structuredContent?.cardV1;
     const sendRef = send?.structuredContent?.ref ?? send?.structuredContent?.agentRef ?? null;

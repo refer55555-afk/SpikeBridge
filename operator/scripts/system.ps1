@@ -8,9 +8,17 @@ $root=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 function TaskName([string]$letter){ if($letter -eq 'a'){return 'SpikeBridge-Account-A'}; if($letter -eq 'b'){return 'SpikeBridge-Account-B'}; throw '没有指定连接通道。' }
 function Snapshot([string]$name){
   $t=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-  if($null -eq $t){return @{exists=$false;name=$name;state='missing'}}
+  if($null -eq $t){return @{exists=$null;name=$name;state='unavailable';queryStatus='failed'}}
   $i=Get-ScheduledTaskInfo -TaskName $name
-  return @{exists=$true;name=$name;state=[string]$t.State;lastResult=$i.LastTaskResult;lastRun=$i.LastRunTime.ToString('o');nextRun=$i.NextRunTime.ToString('o')}
+  $ownerManageable=$false
+  try {
+    $service=New-Object -ComObject Schedule.Service
+    $service.Connect()
+    $sd=[Security.AccessControl.RawSecurityDescriptor]::new($service.GetFolder('\').GetTask($name).GetSecurityDescriptor(4))
+    $currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $ownerManageable=@($sd.DiscretionaryAcl|Where-Object {$_.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and $_.SecurityIdentifier.Value -eq $currentSid -and ($_.AccessMask -band 0x1f01ff) -eq 0x1f01ff}).Count -gt 0
+  } catch {}
+  return @{exists=$true;name=$name;state=[string]$t.State;ownerManageable=$ownerManageable;lastResult=$i.LastTaskResult;lastRun=$i.LastRunTime.ToString('o');nextRun=$i.NextRunTime.ToString('o')}
 }
 function VerifiedRuntime([string]$letter){
   $ownerPath=Join-Path $root ('runtime\state\tunnel-client-'+$letter+'\task-owner.json')
@@ -46,7 +54,16 @@ try {
         $owned=$null -ne $receipt -and [int]$receipt.pid -eq [int]$health.pid -and [string]$receipt.artifactDigest -eq [string]$health.artifactDigest -and $proc.ProcessName -eq 'node' -and [IO.Path]::GetFullPath($proc.Path) -eq [IO.Path]::GetFullPath($expectedNode)
         $bridgeProcess=@{pid=[int]$health.pid;startedAt=$proc.StartTime.ToUniversalTime().ToString('o');owned=$owned}
       } catch {}
-      $bootTime=(Get-Date).ToUniversalTime().AddMilliseconds(-[Environment]::TickCount64).ToString('o')
+      $uptimeMs=[Environment]::TickCount64
+      # Windows PowerShell 5.1 lacks Environment.TickCount64; a null value
+      # otherwise reports the current time as the last Windows boot time.
+      if($null -eq $uptimeMs){
+        if(-not ('SpikeBridgeBootClock' -as [type])){
+          Add-Type 'using System.Runtime.InteropServices; public static class SpikeBridgeBootClock { [DllImport("kernel32.dll")] public static extern ulong GetTickCount64(); }'
+        }
+        $uptimeMs=[SpikeBridgeBootClock]::GetTickCount64()
+      }
+      $bootTime=(Get-Date).ToUniversalTime().AddMilliseconds(-[double]$uptimeMs).ToString('o')
       @{result='PASS';tasks=@{a=(Snapshot 'SpikeBridge-Account-A');b=(Snapshot 'SpikeBridge-Account-B');panel=(Snapshot 'SpikeBridge-Operator')};bridgeProcess=$bridgeProcess;bootTime=$bootTime}|ConvertTo-Json -Depth 8 -Compress
       exit 0
     }
@@ -59,6 +76,7 @@ try {
       $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
       $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
       Register-ScheduledTask -TaskName 'SpikeBridge-Operator' -Action $taskAction -Trigger $triggers -Principal $principal -Settings $settings -Description 'Bridge 后台：本机任务、Token、规则、Memory、通道与安全恢复；关闭窗口不停止服务。' -Force|Out-Null
+      & (Join-Path $root 'scripts\admin\SET-BRIDGE-TASK-OWNER-ACCESS.ps1') -TaskNames 'SpikeBridge-Operator' | Out-Null
       @{result='PASS';message='控制台后台已启用登录自启与每分钟存活检查。'}|ConvertTo-Json -Compress
       exit 0
     }

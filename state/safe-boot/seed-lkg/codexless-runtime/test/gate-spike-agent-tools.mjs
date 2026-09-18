@@ -55,6 +55,10 @@ function record(name, ok, details = {}) {
   results.push({ name, ok: ok === true, ...details });
   console.error(`[gate] ${ok ? "PASS" : "FAIL"} ${name} ${JSON.stringify(details).slice(0, 300)}`);
 }
+const USER_REQUESTED_DELEGATION = Object.freeze({
+  basis: "user_requested",
+  rationale: "This live acceptance gate explicitly requests Agent execution.",
+});
 
 // 1) surface
 const names = await listTools();
@@ -64,13 +68,13 @@ record("surface.spike-group", spikeTools.every((name) => names.includes(name)), 
 record("surface.retired-show-absent", !names.includes("spike.agent_show"), {});
 
 // 2) unknown provider fails closed
-const unknown = await callTool("spike.agent_start", { provider: "does-not-exist", task: "x" });
+const unknown = await callTool("spike.agent_start", { provider: "does-not-exist", task: "x", requestId: "gate-unknown-provider", delegation: USER_REQUESTED_DELEGATION });
 record("unknown-provider", unknown?.isError === true && unknown?.structuredContent?.errorCode === "AGENT_PROVIDER_UNKNOWN", {
   errorCode: unknown?.structuredContent?.errorCode,
 });
 
 // 3) mac honest unsupported cancel (no bridge contact needed)
-const wbCancel = await callTool("spike.agent_cancel", { provider: "mac", ref: "wb_gate_probe" });
+const wbCancel = await callTool("spike.agent_cancel", { provider: "mac", ref: "wb_gate_probe", requestId: "gate-mac-cancel" });
 record("mac.cancel-honest", wbCancel?.structuredContent?.status === "UNKNOWN" && !wbCancel?.isError, {
   status: wbCancel?.structuredContent?.status,
 });
@@ -84,6 +88,8 @@ const marker1 = "SPIKE_AGENT_ZCODE_OK";
 const started = await callTool("spike.agent_start", {
   provider: "zcode",
   task: `Reply with exactly this single token and nothing else: ${marker1}`,
+  requestId: "gate-zcode-start-1",
+  delegation: USER_REQUESTED_DELEGATION,
   options: { mode: "plan" },
 });
 const ref1 = started?.structuredContent?.ref;
@@ -106,7 +112,7 @@ record("zcode.card-filled", card1?.model === "glm-5.3-flash" && Number.isFinite(
 
 // 5) zcode continue through spike.agent_send
 const marker2 = "SPIKE_AGENT_ZCODE_CONT";
-const sent = await callTool("spike.agent_send", { provider: "zcode", ref: ref1, message: `Reply with exactly this single token and nothing else: ${marker2}`, options: { mode: "plan" } });
+const sent = await callTool("spike.agent_send", { provider: "zcode", ref: ref1, message: `Reply with exactly this single token and nothing else: ${marker2}`, requestId: "gate-zcode-send-1", options: { mode: "plan" } });
 const ref2 = sent?.structuredContent?.ref;
 record("zcode.send-ref", typeof ref2 === "string" && ref2 !== ref1, { ref: ref2 });
 let shown2 = null;
@@ -123,16 +129,20 @@ record("zcode.send-marker", String(shown2?.structuredContent?.response ?? "").in
 const longStart = await callTool("spike.agent_start", {
   provider: "zcode",
   task: "Write an extremely long (at least 3000 words) factual essay about the history of mechanical calculators. Do not ask questions.",
+  requestId: "gate-zcode-start-long",
+  delegation: USER_REQUESTED_DELEGATION,
   options: { mode: "plan" },
 });
 await sleep(3_000);
-const cancelled = await callTool("spike.agent_cancel", { provider: "zcode", ref: longStart?.structuredContent?.ref });
+const cancelled = await callTool("spike.agent_cancel", { provider: "zcode", ref: longStart?.structuredContent?.ref, requestId: "gate-zcode-cancel-long" });
 record("zcode.cancel", cancelled?.structuredContent?.status === "interrupted", { status: cancelled?.structuredContent?.status });
 
 // 7) codex equivalence through spike.agent_start (real Codex, tiny task)
 const codexStart = await callTool("spike.agent_start", {
   provider: "codex",
   task: "Reply with exactly this single token and nothing else: SPIKE_AGENT_CODEX_OK",
+  requestId: "gate-codex-start-1",
+  delegation: USER_REQUESTED_DELEGATION,
   options: { reasoningEffort: "low", invocationRationale: "spike.agent gate equivalence check" },
 });
 const codexRef = codexStart?.structuredContent?.ref;

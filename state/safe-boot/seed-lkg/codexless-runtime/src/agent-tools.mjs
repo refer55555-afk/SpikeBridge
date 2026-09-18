@@ -5,6 +5,9 @@ import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const z = require("zod/v4");
+// Internal Symbols never come from public JSON input. Keep exact caller text
+// distinct from the evolving Memory capsule without stripping user content.
+const ORIGINAL_CALLER_TEXT = Symbol.for("spike.bridge.agent.original-caller-text");
 import { MeteredConsentGate } from "./metered-consent.mjs";
 import { AGENT_TASK_CARD_URI, registerAgentTaskCardResource } from "./agent-card-ui.mjs";
 import {
@@ -118,6 +121,67 @@ export function assertAgentTaskCapabilityMatch(task, authority) {
     throw error;
   }
   return { intent, permissionProfile, writeCapable };
+}
+
+export const AGENT_DELEGATION_BASES = Object.freeze([
+  "user_requested",
+  "capability_required",
+  "materially_faster",
+]);
+export const AGENT_REQUIRED_CAPABILITIES = Object.freeze([
+  "provider_only_capability",
+  "persistent_background_execution",
+  "remote_execution",
+  "account_isolation",
+]);
+export const AGENT_ACCELERATION_MECHANISMS = Object.freeze([
+  "parallel_independent_work",
+  "long_running_background_work",
+  "provider_specialization",
+  "remote_execution",
+]);
+
+export function assertAgentDelegationAllowed(delegation) {
+  const block = (message) => {
+    const error = new Error(message);
+    error.code = "AGENT_DELEGATION_NOT_JUSTIFIED";
+    error.nextActions = [
+      "Complete the task directly with local/model-free tools when that is sufficient and faster.",
+      "Start an Agent only when the user explicitly requested it, a provider-only capability is required, or a concrete acceleration mechanism materially reduces completion time.",
+      "Do not delegate merely for a second opinion, convenience, or because an Agent may be smarter.",
+    ];
+    throw error;
+  };
+
+  if (!delegation || typeof delegation !== "object" || Array.isArray(delegation)) {
+    block("Agent was not started: delegation is denied by default and no allowed delegation basis was supplied.");
+  }
+  const basis = typeof delegation.basis === "string" ? delegation.basis.trim() : "";
+  if (!AGENT_DELEGATION_BASES.includes(basis)) {
+    block(`Agent was not started: delegation basis ${basis || "missing"} is not allowed.`);
+  }
+  const rationale = typeof delegation.rationale === "string" ? delegation.rationale.replace(/\s+/g, " ").trim() : "";
+  if (rationale.length < 12 || rationale.length > 2_000) {
+    block("Agent was not started: delegation requires a concise concrete rationale between 12 and 2000 characters.");
+  }
+
+  if (basis === "capability_required") {
+    const capability = typeof delegation.capability === "string" ? delegation.capability.trim() : "";
+    if (!AGENT_REQUIRED_CAPABILITIES.includes(capability)) {
+      block("Agent was not started: capability_required must name a recognized provider-only capability.");
+    }
+    return Object.freeze({ basis, rationale, capability });
+  }
+  if (basis === "materially_faster") {
+    const accelerationMechanism = typeof delegation.accelerationMechanism === "string"
+      ? delegation.accelerationMechanism.trim()
+      : "";
+    if (!AGENT_ACCELERATION_MECHANISMS.includes(accelerationMechanism)) {
+      block("Agent was not started: materially_faster must name a concrete recognized acceleration mechanism.");
+    }
+    return Object.freeze({ basis, rationale, accelerationMechanism });
+  }
+  return Object.freeze({ basis, rationale });
 }
 
 function pathInside(base, candidate) {
@@ -1565,7 +1629,7 @@ export function registerAgentPreviewTools(server, {
     return { ...approved, consent: first.consent, autoCommittedByProfile: true };
   }
 
-  function taskPayloadHash(action, payload, agentRef = null) {
+  function taskPayloadHash(action, payload, agentRef = null, preDelegation = false) {
     const hasCallerModel = Object.hasOwn(payload ?? {}, "callerModel");
     const hasCallerEffort = Object.hasOwn(payload ?? {}, "callerReasoningEffort");
     const bound = {
@@ -1573,6 +1637,7 @@ export function registerAgentPreviewTools(server, {
       agentRef,
       prompt: action === "start" ? payload?.prompt ?? null : null,
       message: action === "send" ? payload?.message ?? null : null,
+      delegation: action === "start" ? payload?.delegation ?? null : null,
       cwd: action === "start" ? payload?.cwd ?? null : null,
       permissionProfile: action === "start" ? payload?.permissionProfile ?? null : null,
       model: hasCallerModel ? payload?.callerModel ?? null : payload?.model ?? null,
@@ -1580,6 +1645,7 @@ export function registerAgentPreviewTools(server, {
       presentationLocale: payload?.presentationLocale ?? null,
       callProfile: payload?.callProfile ?? null,
     };
+    if (preDelegation) delete bound.delegation;
     // Prepared confirmations bind resolved defaults for execution but keep
     // caller intent as the requestId idempotency key. This lets an omitted
     // default remain stable across retries while an explicit user change still
@@ -1589,19 +1655,24 @@ export function registerAgentPreviewTools(server, {
     return createHash("sha256").update(JSON.stringify(bound), "utf8").digest("hex");
   }
 
-  function callerIntentHash(action, payload, agentRef = null) {
+  function callerIntentHash(action, payload, agentRef = null, legacy = false, preDelegation = false) {
+    const original = !legacy && typeof payload?.[ORIGINAL_CALLER_TEXT] === "string"
+      ? payload[ORIGINAL_CALLER_TEXT] : null;
     const bound = {
       action,
       agentRef,
-      prompt: action === "start" ? payload?.prompt ?? null : null,
-      message: action === "send" ? payload?.message ?? null : null,
+      prompt: action === "start" ? original ?? payload?.prompt ?? null : null,
+      message: action === "send" ? original ?? payload?.message ?? null : null,
+      delegation: action === "start" ? payload?.delegation ?? null : null,
       cwd: action === "start" ? payload?.callerCwd ?? null : null,
       model: payload?.callerModel ?? null,
       reasoningEffort: payload?.callerReasoningEffort ?? null,
       invocationRationale: action === "start" ? payload?.callerInvocationRationale ?? null : null,
       presentationLocale: payload?.presentationLocale ?? null,
     };
-    return createHash("sha256").update(JSON.stringify(bound), "utf8").digest("hex");
+    if (preDelegation) delete bound.delegation;
+    const digest = createHash("sha256").update(JSON.stringify(bound), "utf8").digest("hex");
+    return original === null ? digest : `raw-v1:${digest}`;
   }
 
   function taskCardFor({ taskRef, shortTaskId = null, requestId, action, payload, cwd = null, permissionProfile = null, quota = null }) {
@@ -1619,6 +1690,7 @@ export function registerAgentPreviewTools(server, {
       ...(typeof payload?.reasoningEffort === "string" ? { requestedReasoningEffort: payload.reasoningEffort } : {}),
       ...(payload?.modelSelection && typeof payload.modelSelection === "object" ? { modelSelection: structuredClone(payload.modelSelection) } : {}),
       ...(typeof payload?.invocationRationale === "string" ? { invocationRationale: payload.invocationRationale } : {}),
+      ...(payload?.delegation && typeof payload.delegation === "object" ? { delegation: structuredClone(payload.delegation) } : {}),
       presentationLocale: normalizePresentationLocale(payload?.presentationLocale ?? "en"),
       cwd,
       permissionProfile,
@@ -1685,6 +1757,7 @@ export function registerAgentPreviewTools(server, {
           prompt: taskCard?.summary ?? "Recovered Codex task",
           cwd: taskCard?.cwd ?? null,
           callerCwd: taskCard?.cwd ?? null,
+          ...(taskCard?.delegation ? { delegation: structuredClone(taskCard.delegation) } : {}),
           model: taskCard?.requestedModel ?? null,
           ...(typeof taskCard?.requestedReasoningEffort === "string" ? { reasoningEffort: taskCard.requestedReasoningEffort } : {}),
           permissionProfile: taskCard?.permissionProfile ?? null,
@@ -1835,19 +1908,69 @@ export function registerAgentPreviewTools(server, {
     return recoverPersistedRecord(persisted);
   }
 
+  async function reattachTerminalRecord(record) {
+    const checkpoint = record?.terminalSnapshot;
+    if (!record?.agentRef
+      || !["idle", "completed", "interrupted", "failed"].includes(checkpoint?.status)
+      || !checkpoint?.threadId
+      || !checkpoint?.turnId
+      || typeof agentExecutor.reattach !== "function") {
+      return null;
+    }
+    let observed = null;
+    try {
+      observed = await agentExecutor.show({ agentRef: record.agentRef, afterSeq: 0 });
+    } catch {
+      observed = null;
+    }
+    if (observed?.status !== "unknown" && observed?.threadId && observed?.turnId) return observed;
+    const snapshot = await agentExecutor.reattach({
+      agentRef: record.agentRef,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+      cwd: record.cwd,
+      permissionProfile: record.permissionProfile,
+      execution: checkpoint.execution ?? null,
+      timing: checkpoint.timing ?? null,
+      finalResult: checkpoint.finalResult ?? null,
+      latestError: checkpoint.latestError ?? null,
+      lastErrorEvent: checkpoint.lastErrorEvent ?? null,
+      liveness: checkpoint.liveness ?? null,
+      nextSeq: checkpoint.nextSeq ?? 0,
+    });
+    record.turnId = snapshot?.turnId ?? record.turnId;
+    return snapshot;
+  }
+
   async function ensureRecordForAgent(agentRef) {
     if (typeof agentRef !== "string" || !agentRef) return null;
     const currentCard = cardForAgent(agentRef);
-    if (currentCard?.taskRef) return taskRecords.get(currentCard.taskRef) ?? null;
+    if (currentCard?.taskRef) {
+      const currentRecord = taskRecords.get(currentCard.taskRef) ?? null;
+      if (currentRecord) await reattachTerminalRecord(currentRecord);
+      return currentRecord;
+    }
     if (!taskPersistence) return null;
     const persisted = taskPersistence.findByAgentRef(agentRef);
     if (!persisted) return null;
     await recoverPersistedRecord(persisted);
-    return taskRecords.get(persisted.taskRef) ?? null;
+    const recoveredRecord = taskRecords.get(persisted.taskRef) ?? null;
+    if (recoveredRecord) await reattachTerminalRecord(recoveredRecord);
+    return recoveredRecord;
   }
 
   async function existingRequestByCallerIntent({ requestId, action, payload, agentRef = null }) {
     const expectedHash = callerIntentHash(action, payload, agentRef);
+    // Older receipts bind the full enhanced prompt. Only accept an exact old
+    // match; never guess the original text or replay an uncertain request.
+    const matches = (hash, record) => {
+      const legacy = !hash.startsWith("raw-v1:");
+      if (hash === (legacy ? callerIntentHash(action, payload, agentRef, true) : expectedHash)) return true;
+      // Pre-gate receipts omitted delegation from both start and send hashes.
+      // Match their exact original intent only; recovery never replays the turn.
+      return !record?.taskCard?.delegation
+        && hash === callerIntentHash(action, payload, agentRef, legacy, true);
+    };
     let liveRecord = null;
     for (const record of taskRecords.values()) {
       if (record?.action !== action) continue;
@@ -1858,7 +1981,7 @@ export function registerAgentPreviewTools(server, {
       break;
     }
     if (liveRecord?.callerIntentHash) {
-      if (liveRecord.callerIntentHash !== expectedHash) {
+      if (!matches(liveRecord.callerIntentHash, liveRecord)) {
         throw new Error(`requestId ${requestId} was already used for a different Codex caller intent`);
       }
       if (liveRecord.toolError) throw new Error(liveRecord.toolError);
@@ -1867,7 +1990,7 @@ export function registerAgentPreviewTools(server, {
     if (!taskPersistence) return null;
     const persisted = taskPersistence.findByRequest({ requestId, action, agentRef });
     if (!persisted || !persisted.callerIntentHash) return null;
-    if (persisted.callerIntentHash !== expectedHash) {
+    if (!matches(persisted.callerIntentHash, persisted)) {
       throw new Error(`requestId ${requestId} was already used for a different Codex caller intent`);
     }
     if (persisted.toolError) throw new Error(persisted.toolError);
@@ -1881,7 +2004,9 @@ export function registerAgentPreviewTools(server, {
     const persisted = taskPersistence.findByRequest({ requestId, action, agentRef });
     if (!persisted) return null;
     const payloadHash = taskPayloadHash(action, payload, agentRef);
-    if (persisted.payloadHash && persisted.payloadHash !== payloadHash) {
+    const oldPayloadMatches = !persisted.taskCard?.delegation
+      && persisted.payloadHash === taskPayloadHash(action, payload, agentRef, true);
+    if (persisted.payloadHash && persisted.payloadHash !== payloadHash && !oldPayloadMatches) {
       throw new Error(`requestId ${requestId} was already used for a different Codex task payload`);
     }
     const live = taskRecords.get(persisted.taskRef);
@@ -2114,7 +2239,7 @@ export function registerAgentPreviewTools(server, {
       }
     } else if (record.payload?.parentTurnId) {
       const current = await agentExecutor.show({ agentRef: record.agentRef, afterSeq: 0 });
-      if (current.turnId !== record.payload.parentTurnId || current.status !== "idle" || current.canSend !== true) {
+      if (current.turnId !== record.payload.parentTurnId || !["idle", "interrupted"].includes(current.status) || current.canSend !== true) {
         throw new Error("prepared Codex follow-up is stale because the agent advanced; prepare a new task for the current turn");
       }
     }
@@ -2286,11 +2411,22 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Start Codex Agent",
       description:
-        `Experimental Preview. Start one formal Codex agent thread/turn under Codexless's locally resolved authority. Before calling, read and apply the current Codex Call Profile to task sizing, model/reasoning choice, supervision, and in-turn approval habits. invocationRationale records why this task needs Codex. requireCallApproval is the only hard call-stage switch: only an explicit false from a valid configured Profile may skip Call Approval; true, missing, unreadable, invalid, field-missing, or unknown Profile state fails closed. When approval is required, this tool prepares one exact server-bound task and returns consent_required plus fixed compact chatPresentation text with an exact Task ID. The next user-visible assistant response MUST equal the returned content[0].text / chatPresentation.text verbatim, with no prose before or after, no summary, rewrite, reordering, translation, or field omission; do not reconstruct it from structuredContent. Then map the user's literal Yes / No only to codex.agent_commit or codex.agent_decline with that exact taskId. Do not retry agent_start as an approval action. Pass presentationLocale from the current Chat/Host when available; service-machine locale is not user-language authority. When requireCallApproval is false, Codex starts immediately. RUNNING is authoritative but has no mechanical presentation: keep responsibility for the work unit, supervise it according to the bound Profile, and use waiting time for non-conflicting work. requestId is a caller-stable idempotency key and MUST be reused only for retries of the same logical start.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog; no global effort enum is hard-coded." : ""} If the returned state is awaitingApproval, apply explicit current-task user instructions first, otherwise the valid bound Profile, and use the recommended default only when the Profile is missing. If user confirmation is actually required, present the returned conspicuous ordinary-text decision with exact Task ID/action/scope/reason/risk and literal Yes / No. Durable user corrections should prompt an offer to update the Profile, never a silent write. The caller cannot choose or widen Codex permission profile, sandbox, roots, network authority, or other authority ceilings.`,
+        `Experimental Preview. Start one formal Codex agent thread/turn under Codexless's locally resolved authority. NEW AGENT DELEGATION IS DENY-BY-DEFAULT and is a hard gate separate from the Codex Call Profile: use direct local/model-free work when it is sufficient and faster, and start Codex only when delegation proves explicit user request, a recognized provider-only capability requirement, or a concrete material speed advantage. Convenience, second opinions, or the idea that Codex may be smarter are not valid delegation reasons. Before calling, read and apply the current Codex Call Profile to task sizing, model/reasoning choice, supervision, and in-turn approval habits. invocationRationale records why this task needs Codex after the hard delegation gate has passed. requireCallApproval is the only hard call-stage switch inside the Profile: only an explicit false from a valid configured Profile may skip Call Approval; true, missing, unreadable, invalid, field-missing, or unknown Profile state fails closed. When approval is required, this tool prepares one exact server-bound task and returns consent_required plus fixed compact chatPresentation text with an exact Task ID. The next user-visible assistant response MUST equal the returned content[0].text / chatPresentation.text verbatim, with no prose before or after, no summary, rewrite, reordering, translation, or field omission; do not reconstruct it from structuredContent. Then map the user's literal Yes / No only to codex.agent_commit or codex.agent_decline with that exact taskId. Do not retry agent_start as an approval action. Pass presentationLocale from the current Chat/Host when available; service-machine locale is not user-language authority. When requireCallApproval is false, Codex starts immediately. RUNNING is authoritative but has no mechanical presentation: keep responsibility for the work unit, supervise it according to the bound Profile, and use waiting time for non-conflicting work. requestId is a caller-stable idempotency key and MUST be reused only for retries of the same logical start.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog; no global effort enum is hard-coded." : ""} If the returned state is awaitingApproval, apply explicit current-task user instructions first, otherwise the valid bound Profile, and use the recommended default only when the Profile is missing. If user confirmation is actually required, present the returned conspicuous ordinary-text decision with exact Task ID/action/scope/reason/risk and literal Yes / No. Durable user corrections should prompt an offer to update the Profile, never a silent write. The caller cannot choose or widen Codex permission profile, sandbox, roots, network authority, or other authority ceilings.`,
       inputSchema: z.object({
         prompt: z.string().min(1).max(200_000),
         requestId: z.string().min(1).max(512)
           .describe("Stable caller-generated idempotency key. Reuse this exact value for retries of the same logical start."),
+        delegation: z.object({
+          basis: z.enum(AGENT_DELEGATION_BASES)
+            .describe("Why a new Codex Agent is justified. user_requested is valid only when the current user explicitly asked for Codex/Agent use; do not infer it from a general task request."),
+          rationale: z.string().min(12).max(2_000)
+            .describe("Concrete bounded explanation of why direct local/model-free execution is insufficient or slower for this task."),
+          capability: z.enum(AGENT_REQUIRED_CAPABILITIES).optional()
+            .describe("Required when basis=capability_required."),
+          accelerationMechanism: z.enum(AGENT_ACCELERATION_MECHANISMS).optional()
+            .describe("Required when basis=materially_faster."),
+        }).strict()
+          .describe("Hard delegation evidence checked before Profile resolution, authority resolution, consent preparation, or any Codex/model work."),
         cwd: z.string().min(1).max(32_768).optional()
           .describe("Optional execution-directory context. Codexless resolves authority locally for this cwd; cwd is not a permission selector."),
         presentationLocale: z.string().min(2).max(64).optional()
@@ -2314,12 +2450,15 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex task ready.",
       },
     },
-    async ({ prompt, requestId, cwd, presentationLocale, model, reasoningEffort, invocationRationale, profileDecision }, toolContext) => structuredCard(async () => {
+    async ({ prompt, requestId, delegation, cwd, presentationLocale, model, reasoningEffort, invocationRationale, profileDecision, [ORIGINAL_CALLER_TEXT]: originalCallerText = prompt }, toolContext) => structuredCard(async () => {
       assertFormalAgentAvailable();
+      const boundDelegation = assertAgentDelegationAllowed(delegation);
       const resolvedPresentationLocale = resolvePresentationLocale(presentationLocale, toolContext);
 
       const startCallerIntent = {
         prompt,
+        [ORIGINAL_CALLER_TEXT]: originalCallerText,
+        delegation: boundDelegation,
         callerCwd: cwd ?? null,
         presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
@@ -2354,6 +2493,8 @@ export function registerAgentPreviewTools(server, {
       const capabilityPreflight = assertAgentTaskCapabilityMatch(prompt, authority);
       const callerPayload = {
         prompt,
+        [ORIGINAL_CALLER_TEXT]: originalCallerText,
+        delegation: boundDelegation,
         callerCwd: cwd ?? null,
         cwd: authority.effectiveCwd,
         taskIntent: capabilityPreflight.intent,
@@ -2579,6 +2720,14 @@ export function registerAgentPreviewTools(server, {
       const snapshot = await agentExecutor.show({ agentRef, afterSeq: afterSeq ?? 0 });
       const card = cardForAgent(agentRef);
       const record = card?.taskRef ? taskRecords.get(card.taskRef) ?? null : null;
+      // An unavailable provider cannot erase a previously proven terminal
+      // result or its durable thread/turn identity after a Bridge restart.
+      if (snapshot?.status === "unknown" && record?.terminalSnapshot
+        && (!record.turnId || record.turnId === record.terminalSnapshot.turnId)
+        && ((!snapshot.threadId && !snapshot.turnId && snapshot.latestError === "unknown agentRef")
+          || (snapshot.threadId === record.terminalSnapshot.threadId && snapshot.turnId === record.terminalSnapshot.turnId))) {
+        return structuredClone(record.terminalSnapshot);
+      }
       const suppress = isTerminalStatus(snapshot?.status)
         && (record?.suppressTerminalFallback === true || record?.terminalSnapshot?.suppressManualFallback === true)
         && (!record?.turnId || !snapshot?.turnId || record.turnId === snapshot.turnId);
@@ -2635,12 +2784,13 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex follow-up ready.",
       },
     },
-    async ({ agentRef, message, requestId, presentationLocale, model, reasoningEffort }, toolContext) => structuredCard(async () => {
+    async ({ agentRef, message, requestId, presentationLocale, model, reasoningEffort, [ORIGINAL_CALLER_TEXT]: originalCallerText = message }, toolContext) => structuredCard(async () => {
       assertFormalAgentAvailable();
       await ensureRecordForAgent(agentRef);
       const resolvedPresentationLocale = resolvePresentationLocale(presentationLocale, toolContext);
       const sendCallerIntent = {
         message,
+        [ORIGINAL_CALLER_TEXT]: originalCallerText,
         presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
@@ -2659,7 +2809,7 @@ export function registerAgentPreviewTools(server, {
         ? structuredClone(parentCard.callProfile)
         : null;
       const current = await agentExecutor.show({ agentRef, afterSeq: 0 });
-      if (current.status !== "idle" || current.canSend !== true || !current.turnId) {
+      if (!["idle", "interrupted"].includes(current.status) || current.canSend !== true || !current.turnId) {
         throw new Error(`agent ${agentRef} is not ready for a follow-up: ${current.status}`);
       }
 
@@ -2685,6 +2835,7 @@ export function registerAgentPreviewTools(server, {
 
       const payload = {
         message,
+        [ORIGINAL_CALLER_TEXT]: originalCallerText,
         presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,

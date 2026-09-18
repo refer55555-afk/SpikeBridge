@@ -52,3 +52,6 @@ Thumbs.db
 .idea/
 *.log
 *.pid
+# Local Spike OS integration / native bridge secrets
+.spike/
+runtime/native-cli/*.key

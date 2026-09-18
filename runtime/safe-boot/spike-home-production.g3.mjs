@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolvePinnedCodex } from './codex-runtime.mjs';
 import { legacyIdle, withOperatorMaintenance } from "./operator-maintenance.mjs";
@@ -23,9 +22,9 @@ const PRIMARY_MAC_SECRET = path.join(ROOT, "secrets", "mac", "pairing.secret");
 const CANDIDATE_CODEX_HOME_ROOT = path.join(STATE_ROOT, "work", "candidate-codex-home");
 const WORKBENCH_ROOT = ROOT;
 const MUTABLE_LAUNCHER = path.join(ROOT, "bootstrap", "start-spike-bridge.ps1");
-const NODE = process.execPath;
+const NODE = "C:\\Program Files\\nodejs\\node.exe", PYTHON = "C:\\Users\\Administrator\\Documents\\Spike-OS\\.venv\\Scripts\\python.exe";
 const ENTRYPOINT = "mcp-http-with-git-commit-and-spike-context.mjs";
-const OVERLAY_FILES = [ENTRYPOINT, "git-commit-primitive.mjs", "git-commit-selftest.mjs"];
+const OVERLAY_FILES = [ENTRYPOINT, "git-commit-primitive.mjs", "git-commit-selftest.mjs", "spike-context-bridge.py"];
 const OVERLAY_TOOL_NAMES = ["model_free_git_commit", "spike_context"];
 const BASE_FROZEN_DEPS = ["@modelcontextprotocol/server", "@modelcontextprotocol/node", "@modelcontextprotocol/core", "@hono/node-server", "zod"];
 const OPTIONAL_FROZEN_DEPS = ["@napi-rs/canvas", "pdfjs-dist"];
@@ -134,7 +133,7 @@ async function freeze(source,{replaceEntrypoint=false,omitServer=false}={}) {
     await writeFile(path.join(temp,"manifest.json"),`${JSON.stringify(manifest,null,2)}\n`,{mode:0o444});await rename(temp,final);return {path:final,manifest};
   } finally { await rm(temp,{recursive:true,force:true}).catch(()=>{}); }
 }
-async function sourceWithRuntimeConfig(source) { return source; }
+async function sourceWithRuntimeConfig(source) { await cp(path.join(process.env.LOCALAPPDATA,"Codexless","config"),path.join(source,"codexless-runtime","config"),{recursive:true}); return source; }
 async function freezeCurrent(options={}) {
   if(process.env.SPIKE_BRIDGE_REVIEWED_SOURCE){
     const reviewed=path.join(STATE_ROOT,"work","operator-reviewed-source");
@@ -174,22 +173,7 @@ async function readVerifyPending(){
 }
 async function clearVerifyPending(){await rm(VERIFY_PENDING_PATH,{force:true});}
 function run(exe,args,opts={}) { const r=spawnSync(exe,args,{encoding:"utf8",windowsHide:true,...opts}); return {ok:r.status===0,status:r.status,stdout:clean(r.stdout||""),stderr:clean(r.stderr||"")}; }
-export async function preflight(p) {
-  const checks=[];
-  const add=(name,ok,detail)=>checks.push({name,status:ok?"pass":"fail",...(!ok&&detail?{detail:clean(detail)}:{})});
-  add("node-runtime",await exists(NODE));
-  add("canonical-codex-a-auth",await exists(path.join(PRIMARY_CODEX_HOME,"auth.json")));
-  add("canonical-call-profile",await exists(PRIMARY_CALL_PROFILE));
-  let integrity;
-  try { integrity=await verifyIntegrity(p); add("release-integrity",true); }
-  catch(e){ add("release-integrity",false,e.message); return {status:"not_ready",passed:false,checks}; }
-  for(const name of OVERLAY_FILES){ const r=run(NODE,["--check",path.join(p,"overlay",name)]); add(`node-check:${name}`,r.ok,r.stderr); }
-  const runtimeRoot=path.join(p,"codexless-runtime"),packageJson=await json(path.join(runtimeRoot,"package.json")),probes=runtimeDependencyProbes(packageJson);
-  const script=`const{createRequire}=require('node:module'),path=require('node:path');const root=${JSON.stringify(runtimeRoot)},r=createRequire(${JSON.stringify(path.join(runtimeRoot,"package.json"))});for(const n of ${JSON.stringify(probes)}){const found=path.resolve(r.resolve(n));if(!found.toLowerCase().startsWith((root+path.sep).toLowerCase()))throw new Error('resolution escaped frozen runtime: '+n);}`;
-  const req=run(NODE,["-e",script]); add("frozen-createRequire",req.ok,req.stderr);
-  const passed=checks.every(x=>x.status==="pass");
-  return {status:passed?"ready":"not_ready",passed,digest:integrity.digest,checks};
-}
+export async function preflight(p) { const checks=[],add=(name,ok,detail)=>checks.push({name,status:ok?"pass":"fail",...(!ok&&detail?{detail:clean(detail)}:{})}); add("fixed-node",await exists(NODE)); add("fixed-spike-os-python",await exists(PYTHON)); add("canonical-codex-a-auth",await exists(path.join(PRIMARY_CODEX_HOME,"auth.json"))); add("canonical-call-profile",await exists(PRIMARY_CALL_PROFILE)); add("canonical-memory-db",await exists(PRIMARY_MEMORY_DB)); add("canonical-mac-secret",await exists(PRIMARY_MAC_SECRET)); let integrity; try{integrity=await verifyIntegrity(p);add("release-integrity",true);}catch(e){add("release-integrity",false,e.message);return {status:"not_ready",passed:false,checks};} for(const name of OVERLAY_FILES.slice(0,3)){const r=run(NODE,["--check",path.join(p,"overlay",name)]);add(`node-check:${name}`,r.ok,r.stderr);} const runtimeRoot=path.join(p,"codexless-runtime"),packageJson=await json(path.join(runtimeRoot,"package.json")),probes=runtimeDependencyProbes(packageJson),script=`const{createRequire}=require('node:module'),path=require('node:path');const root=${JSON.stringify(runtimeRoot)},r=createRequire(${JSON.stringify(path.join(runtimeRoot,"package.json"))});for(const n of ${JSON.stringify(probes)}){const found=path.resolve(r.resolve(n));if(!found.toLowerCase().startsWith((root+path.sep).toLowerCase()))throw new Error('resolution escaped frozen runtime: '+n);}`,req=run(NODE,["-e",script]);add("frozen-createRequire",req.ok,req.stderr); const bridge=run(PYTHON,[path.join(p,"overlay","spike-context-bridge.py"),"--preflight"]);let b;try{b=JSON.parse(bridge.stdout);}catch{} add("spike-context-preflight",bridge.ok&&b?.result==="PASS"&&b?.tool==="spike_context"&&b?.write_tools===0&&b?.ledger_scope==="personal_g6",bridge.stderr||(b?"contract mismatch":"invalid JSON")); const passed=checks.every(x=>x.status==="pass");return {status:passed?"ready":"not_ready",passed,digest:integrity.digest,checks}; }
 async function request(port,ep){const r=await fetch(`http://127.0.0.1:${port}/${ep}`,{signal:AbortSignal.timeout(5000)});return {status:r.status,body:await r.json()};}
 function parseMcpEvent(text){for(const line of String(text).split(/\r?\n/)){if(!line.startsWith("data: "))continue;const value=JSON.parse(line.slice(6));if(value?.error)fail(`MCP error ${value.error.code}: ${value.error.message}`);if(value?.result)return value.result;}fail("MCP response missing result event");}
 async function mcpRpc(port,id,method,params,{timeoutMs=20000}={}){const r=await fetch(`http://127.0.0.1:${port}/mcp`,{method:"POST",headers:{"content-type":"application/json","accept":"application/json, text/event-stream"},body:JSON.stringify({jsonrpc:"2.0",id,method,params}),signal:AbortSignal.timeout(timeoutMs)});if(r.status!==200)fail(`MCP ${method} returned HTTP ${r.status}`);return parseMcpEvent(await r.text());}
@@ -212,7 +196,9 @@ export function candidateBrowserStatusAccepted(browser){return Boolean(browser&&
 export function candidateBrowserStatusRetryable(browser){return Boolean(browser&&browser.status==="unavailable"&&browser.reason==="BROWSER_RUNTIME_ERROR");}
 function browserStatusSummary(browser){return {status:browser?.status??"unknown",reason:browser?.reason??null,error:browser?.error??null,nodeRepl:browser?.nodeRepl??"unknown",chromeFamily:browser?.chrome?.family??null,chromeSkill:browser?.chromeSkill??"unknown",connectedBrowsers:Array.isArray(browser?.connectedBrowsers)?browser.connectedBrowsers:[]};}
 async function readCandidateBrowserStatus(port,id){
-  const called=await mcpRpc(port,id,"tools/call",{name:"codex.browser_status",arguments:{cwd:WORKBENCH_ROOT}});
+  // Browser Workbench tool calls have a 60s inner budget plus cold bootstrap.
+  // The outer probe must wait for that bounded result instead of aborting at 20s.
+  const called=await mcpRpc(port,id,"tools/call",{name:"codex.browser_status",arguments:{cwd:WORKBENCH_ROOT}},{timeoutMs:90000});
   return called?.structuredContent??null;
 }
 function browserToolError(called){
@@ -227,7 +213,7 @@ function browserToolError(called){
   }
 }
 async function readCandidateBrowserTabs(port,id){
-  const called=await mcpRpc(port,id,"tools/call",{name:"codex.browser_tabs",arguments:{cwd:WORKBENCH_ROOT}});
+  const called=await mcpRpc(port,id,"tools/call",{name:"codex.browser_tabs",arguments:{cwd:WORKBENCH_ROOT}},{timeoutMs:90000});
   const toolError=browserToolError(called);
   if(toolError)return {ok:false,...toolError,value:null};
   const value=called?.structuredContent??null;
@@ -323,6 +309,20 @@ async function candidateSurfaceAcceptance(release,port,session=null,{includeBrow
   if(spikeStart?._meta?.ui?.resourceUri!==cardCurrent||spikeStart?._meta?.["openai/outputTemplate"]!==cardCurrent){
     fail("candidate Spike Agent Card start metadata does not match the frozen canonical resource");
   }
+  const expectedDelegationBases=["user_requested","capability_required","materially_faster"];
+  for(const startToolName of ["spike.agent_start","codex.agent_start"]){
+    const tool=tools.find(entry=>entry?.name===startToolName);
+    const schema=tool?.inputSchema;
+    const delegation=schema?.properties?.delegation;
+    const basisEnum=delegation?.properties?.basis?.enum;
+    const topRequired=Array.isArray(schema?.required)?schema.required:[];
+    const delegationRequired=Array.isArray(delegation?.required)?delegation.required:[];
+    if(!tool||!topRequired.includes("delegation")||delegation?.type!=="object"
+      ||!delegationRequired.includes("basis")||!delegationRequired.includes("rationale")
+      ||!Array.isArray(basisEnum)||JSON.stringify([...basisEnum].sort())!==JSON.stringify([...expectedDelegationBases].sort())){
+      fail(`candidate ${startToolName} is missing the deny-by-default Agent Delegation Gate contract`);
+    }
+  }
   for(const name of ["spike.agent_status","spike.agent_send","spike.agent_cancel"]){
     const tool=tools.find(entry=>entry?.name===name);
     if(tool?._meta?.ui?.resourceUri||tool?._meta?.["openai/outputTemplate"]){
@@ -391,7 +391,7 @@ async function candidateSurfaceAcceptance(release,port,session=null,{includeBrow
   const [codexA,codexB,zcode,mac,workbee]=providerProbeValues;
   const providerProbes={codexA,codexB,zcode,mac,workbee};
   if(providerProbes.codexA.isError||providerProbes.codexA.value?.provider!=="codex-a")fail("candidate codex-a provider route failed");
-  if(!providerProbes.codexB.isError&&providerProbes.codexB.value?.provider!=="codex-b")fail("candidate codex-b provider route returned an invalid identity");
+  if(providerProbes.codexB.isError||providerProbes.codexB.value?.provider!=="codex-b")fail("candidate codex-b provider route failed");
   if(!providerProbes.zcode.isError||providerProbes.zcode.value?.provider!=="zcode"||providerProbes.zcode.value?.status!=="lost"||typeof providerProbes.zcode.value?.error!=="string")fail("candidate zcode missing-ref contract failed");
   if(!providerProbes.mac.isError||providerProbes.mac.value?.provider!=="mac"||providerProbes.mac.value?.code!=="AGENT_PROVIDER_CANCEL_UNSUPPORTED")fail("candidate mac cancel-unsupported contract failed");
   const macCard=providerProbes.mac.value?.cardV1;
@@ -404,7 +404,7 @@ async function candidateSurfaceAcceptance(release,port,session=null,{includeBrow
     toolCount:names.length,
     expectedToolCount:expected.length,
     account:{status:account.status,authMode:account.account.authMode,plan:account.account.plan??null,quotaStatus:account.quota?.status??null},
-    providerRoutes:{codexA:"pass",codexB:providerProbes.codexB.isError?"unavailable":"pass",zcode:"pass",mac:"pass",workbee:"rejected"},
+    providerRoutes:{codexA:"pass",codexB:"pass",zcode:"pass",mac:"pass",workbee:"rejected"},
     browser,
     browserAttempts,
     browserLive,
@@ -532,7 +532,7 @@ async function stopSpawnedProcessTree(pid,port){
     if(!cmd||!cmd.toLowerCase().includes(ENTRYPOINT.toLowerCase()))fail(`spawned pid ${pid} is not the managed Spike Bridge entrypoint`);
   }
   const r=run("C:\\Windows\\System32\\taskkill.exe",["/PID",String(pid),"/T","/F"]);
-  if(!r.ok)fail(`failed to stop managed process tree ${pid}`);
+  if(!r.ok)fail(`failed to stop managed process tree ${pid}: exit=${r.status}; ${r.stderr||r.stdout}`);
   const end=Date.now()+15000;
   while(Date.now()<end){
     const alive=processAlive(pid);
@@ -600,12 +600,12 @@ function runtimeEnv(release,port,codexHome=PRIMARY_CODEX_HOME,configOverridesFil
     CODEX_TOOLBOX_DEFAULT_CWD:ROOT,
     SPIKE_HOME_CODEXLESS_RUNTIME_ROOT:path.join(release.path,"codexless-runtime"),
     SPIKE_HOME_ARTIFACT_DIGEST:release.manifest.digest,
-    USERPROFILE:process.env.USERPROFILE??process.env.HOME??ROOT,
-    HOME:process.env.HOME??process.env.USERPROFILE??ROOT,
-    HOMEDRIVE:process.env.HOMEDRIVE??path.parse(process.env.USERPROFILE??ROOT).root.replace(/\\$/,""),
-    HOMEPATH:process.env.HOMEPATH??"\\",
-    LOCALAPPDATA:process.env.LOCALAPPDATA??path.join(process.env.USERPROFILE??ROOT,"AppData","Local"),
-    APPDATA:process.env.APPDATA??path.join(process.env.USERPROFILE??ROOT,"AppData","Roaming"),
+    USERPROFILE:"C:\\Users\\Administrator",
+    HOME:"C:\\Users\\Administrator",
+    HOMEDRIVE:"C:",
+    HOMEPATH:"\\Users\\Administrator",
+    LOCALAPPDATA:"C:\\Users\\Administrator\\AppData\\Local",
+    APPDATA:"C:\\Users\\Administrator\\AppData\\Roaming",
     CODEX_HOME:codexHome,
     NO_PROXY:noProxy,
   };
@@ -709,7 +709,7 @@ async function validateCandidate(release,session){
   if(!pf.passed)fail("dependency preflight failed");
   const trustedRoots=await productionTrustedRoots();
   await event(session,"candidate_trust_snapshot",{trustedRoots});
-  let pid=null;
+  let pid=null,validationError=null;
   try{
     pid=await startRelease(release,7691,session,trustedRoots);
     const h=await waitHealth(7691,release.manifest.digest,pid);
@@ -717,9 +717,19 @@ async function validateCandidate(release,session){
     if(h.healthz?.body?.toolCount!==surface.expectedToolCount||h.readyz?.body?.toolCount!==surface.expectedToolCount)fail(`candidate health tool count mismatch: expected=${surface.expectedToolCount} actual=${h.healthz?.body?.toolCount}/${h.readyz?.body?.toolCount}`);
     await event(session,"candidate_ready",{pid,digest:release.manifest.digest,toolCount:surface.toolCount,browser:surface.browser,browserAttempts:surface.browserAttempts});
     return {...h,surface};
+  }catch(error){
+    validationError=error;
+    await event(session,"candidate_validation_failed",{error:error.message});
+    throw error;
   }finally{
-    if(pid&&processAlive(pid))await stopExact(pid,7691);
-    await cleanupCandidateCodexHome(session);
+    try{
+      if(pid&&processAlive(pid))await stopExact(pid,7691);
+      await cleanupCandidateCodexHome(session);
+    }catch(cleanupError){
+      await event(session,"candidate_cleanup_failed",{error:cleanupError.message,validationError:validationError?.message??null});
+      if(validationError)throw new AggregateError([validationError,cleanupError],`${validationError.message}; candidate cleanup also failed: ${cleanupError.message}`);
+      throw cleanupError;
+    }
   }
 }
 async function stageCandidateVerification(release,kind="current"){
@@ -825,6 +835,26 @@ async function finishCandidateVerification(){
     await cleanupCandidateCodexHome(pending.sessionId).catch(()=>{});
     if(!verified)await clearVerifyPending().catch(()=>{});
   }
+}
+async function abortCandidateVerification(){
+  const pending=await readVerifyPending();
+  if(!pending)return {result:"PASS",action:"verify-aborted",phase:"abort",alreadyIdle:true};
+  const before=await productionIdentity(),beforeHealth=await health(7690);
+  if(!before||!beforeHealth.ok||before.pid!==pending.productionPid)fail("production changed during staged candidate validation; refusing to abort or clear candidate state");
+  const candidateOwner=await listenerPid(7691);
+  if(candidateOwner!==null){
+    if(candidateOwner!==pending.candidatePid)fail(`staged candidate listener mismatch during abort: expected=${pending.candidatePid} observed=${candidateOwner}`);
+    await assertOverlayIdentity(pending.candidatePid,7691);
+    await stopExact(pending.candidatePid,7691);
+  }else if(processAlive(pending.candidatePid)){
+    fail(`staged candidate pid ${pending.candidatePid} is still alive without owning port 7691; refusing unsafe cleanup`);
+  }
+  await cleanupCandidateCodexHome(pending.sessionId);
+  const after=await productionIdentity(),afterHealth=await health(7690);
+  if(!after||!afterHealth.ok||after.pid!==pending.productionPid)fail("production changed while aborting staged candidate validation");
+  await clearVerifyPending();
+  await event(pending.sessionId,"candidate_verify_aborted",{pid:pending.candidatePid,digest:pending.digest,productionPid:pending.productionPid});
+  return {result:"PASS",action:"verify-aborted",phase:"abort",digest:pending.digest,candidatePid:pending.candidatePid,productionPid:pending.productionPid};
 }
 async function lockOwnerIsActive(owner){
   if(!Number.isInteger(owner?.pid)||owner.pid<=0||!processAlive(owner.pid))return false;
@@ -988,33 +1018,11 @@ async function reconcilePending(state){
   return {result:"PASS",action:"pending-lkg-restored",pid,digest:previous.manifest.digest};
 }
 async function verifyRelease(release,kind="current"){const session=randomUUID(),before=await productionIdentity(),beforeHealth=await health(7690);if(!before||!beforeHealth.ok)fail("production 7690 is not healthy before candidate validation");await event(session,"session_started",{action:"verify",kind,digest:release.manifest.digest,productionPid:before.pid});await validateCandidate(release,session);const after=await productionIdentity(),afterHealth=await health(7690);if(!afterHealth.ok||after?.pid!==before.pid)fail("production changed during candidate validation");const receipt={schemaVersion:1,digest:release.manifest.digest,releasePath:release.path,verifiedAt:new Date().toISOString(),productionPid:before.pid,kind};await atomicJson(VERIFIED_PATH,receipt);await event(session,"verified",receipt);return {result:"PASS",...receipt};}
-async function initSeed(){return withLock(async()=>{
-  const release=await freezeSeed();
-  const existing=await listenerPid(7690);
-  if(existing){
-    const result=await verifyRelease(release,"seed-lkg");
-    await stateUpdate({lastKnownGood:{id:"7691",version:release.manifest.digest,artifactPath:release.path,digest:release.manifest.digest}});
-    return result;
-  }
-  const pf=await preflight(release.path);
-  if(!pf.passed)fail(`first-run preflight failed: ${JSON.stringify(pf.checks)}`);
-  const session=randomUUID();
-  await event(session,"first_run_started",{digest:release.manifest.digest});
-  const pid=await startRelease(release,7690,session);
-  const started=await waitHealth(7690,release.manifest.digest,pid);
-  await candidateSurfaceAcceptance(release,7690,session);
-  const record={id:"7691",version:release.manifest.digest,artifactPath:release.path,digest:release.manifest.digest};
-  await stateUpdate({lastKnownGood:record,circuitBreaker:closedCircuitBreaker()});
-  const receipt={schemaVersion:1,digest:release.manifest.digest,releasePath:release.path,verifiedAt:new Date().toISOString(),productionPid:pid,kind:"seed-lkg"};
-  await atomicJson(VERIFIED_PATH,receipt);
-  await writeManagedBridgeRecord(release,pid,session,started);
-  await event(session,"first_run_completed",receipt);
-  return {result:"PASS",...receipt,firstRun:true};
-});}
+async function initSeed(){return withLock(async()=>{const release=await freezeSeed(),result=await verifyRelease(release,"seed-lkg");await stateUpdate({lastKnownGood:{id:"7691",version:release.manifest.digest,artifactPath:release.path,digest:release.manifest.digest}});return result;});}
 async function verifyCurrent(){
   return withLock(async()=>{
     const phase=String(process.env.SPIKE_SAFE_BOOT_VERIFY_PHASE??"full").trim().toLowerCase()||"full";
-    if(!["full","start","core","finish"].includes(phase))fail("SPIKE_SAFE_BOOT_VERIFY_PHASE must be full, start, core, or finish");
+    if(!["full","start","core","finish","abort"].includes(phase))fail("SPIKE_SAFE_BOOT_VERIFY_PHASE must be full, start, core, finish, or abort");
     const circuitSession=randomUUID();
     const gate=await gateOperationalCircuit(circuitSession,"verify");
     if(!gate.allowed)return {result:"REFUSED",action:"verify",reason:"circuit_breaker_open",circuitBreaker:gate.state.circuitBreaker};
@@ -1025,7 +1033,9 @@ async function verifyCurrent(){
           ? await coreCandidateVerification()
           : phase==="finish"
             ? await finishCandidateVerification()
-            : await verifyRelease(await verificationCandidate(),"current");
+            : phase==="abort"
+              ? await abortCandidateVerification()
+              : await verifyRelease(await verificationCandidate(),"current");
       if(!["start","core"].includes(phase))await closeOperationalCircuit(circuitSession,"verify_success");
       return result;
     }catch(error){
@@ -1094,9 +1104,10 @@ async function promoteFull(){
 
       newPid=await startRelease(release,7690,session);
       state=await writePendingPhase(state,state.pending,"candidate_started",{candidatePid:newPid});
-      await setProductionMaintenance(true);
-
       const h=await waitHealth(7690,receipt.digest,newPid);
+      // The native control receipt belongs to the new process only after its
+      // startup completes. Early maintenance calls can still see the dead PID.
+      await setProductionMaintenance(true);
       const surface=await candidateSurfaceAcceptance(release,7690);
       if(h.healthz?.body?.toolCount!==surface.expectedToolCount||h.readyz?.body?.toolCount!==surface.expectedToolCount)fail(`production candidate health tool count mismatch: expected=${surface.expectedToolCount} actual=${h.healthz?.body?.toolCount}/${h.readyz?.body?.toolCount}`);
       await writeManagedBridgeRecord(release,newPid,session,h);
@@ -1113,10 +1124,12 @@ async function promoteFull(){
       return {result:"PASS",digest:receipt.digest,oldPid:old.pid,newPid,health:h,toolCount:surface.toolCount,browser:surface.browser,browserAttempts:surface.browserAttempts,artifactDigestMatch:h.healthz?.body?.artifactDigest===receipt.digest,circuitBreaker:state.circuitBreaker};
     }catch(error){
       const failedState=await recordOperationalFailure(session,"promotion_activation",error.message);
+      let candidateStopError=null;
       if(newPid&&processAlive(newPid)){
-        try{await stopExact(newPid,7690);}catch(stopError){await event(session,"failed_candidate_stop_error",{error:stopError.message,pid:newPid});}
+        try{await stopSpawnedProcessTree(newPid,7690);}catch(stopError){candidateStopError=stopError;await event(session,"failed_candidate_stop_error",{error:stopError.message,pid:newPid});}
       }
       await event(session,"promotion_failed",{error:error.message,phase:(await store.readState()).pending?.phase??null});
+      if(candidateStopError)return {result:"FAIL",action:"promote",stage:"candidate-cleanup",error:clean(error.message),cleanupError:clean(candidateStopError.message),pendingPreserved:true,maintenanceHeld:true,rollbackNotStarted:true,circuitBreaker:failedState.circuitBreaker};
 
       try{
         prior.manifest=await verifyIntegrity(prior.path);

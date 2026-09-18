@@ -42,7 +42,11 @@ export class LazyCodexAgentExecutor {
 
   async #get() {
     if (this.#closed) throw new Error("LazyCodexAgentExecutor is closed");
-    if (this.#delegate) return this.#delegate;
+    if (this.#delegate) {
+      await this.#delegate.open();
+      if (this.#closed) throw new Error("LazyCodexAgentExecutor is closed");
+      return this.#delegate;
+    }
     if (!this.#delegatePromise) {
       this.#delegatePromise = (async () => {
         const delegate = await this.#factory();
@@ -50,7 +54,13 @@ export class LazyCodexAgentExecutor {
           throw new Error("LazyCodexAgentExecutor factory returned an invalid executor");
         }
         delegate.setOperatorObserver?.(this.operatorObserver);
-        await delegate.open();
+        try {
+          await delegate.open();
+          if (this.#closed) throw new Error("LazyCodexAgentExecutor closed while opening");
+        } catch (error) {
+          await delegate.close().catch(() => {});
+          throw error;
+        }
         this.#delegate = delegate;
         return delegate;
       })();
